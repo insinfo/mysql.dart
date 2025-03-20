@@ -3,7 +3,7 @@
 [![CI](https://github.com/insinfo/mysql.dart/actions/workflows/dart.yml/badge.svg)](https://github.com/insinfo/mysql.dart/actions/workflows/dart.yml)
 [![Pub Package](https://img.shields.io/pub/v/mysql_dart.svg)](https://pub.dev/packages/mysql_dart)  
 
-#### fork from https://github.com/insinfo/mysql.dart
+#### fork from https://github.com/zim32/mysql.dart
 
 See [example](example/) directory for examples and usage
 

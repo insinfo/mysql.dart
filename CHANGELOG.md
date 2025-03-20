@@ -1,5 +1,9 @@
 ## 0.0.30
 
+* feat: Binary prepared statements with enhanced integration and unit tests
+
+## 0.0.30
+
 * Rename mysql_client to mysql_dart
 
 ## 0.0.29
