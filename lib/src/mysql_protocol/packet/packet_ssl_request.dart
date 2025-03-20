@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
-import 'package:mysql_client/mysql_protocol.dart';
+import 'package:mysql_dart/mysql_protocol.dart';
 
 const _supportedCapabitilies = mysqlCapFlagClientProtocol41 |
     mysqlCapFlagClientSecureConnection |

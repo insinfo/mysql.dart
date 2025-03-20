@@ -1,7 +1,7 @@
 See [example](../example/) directory for nore examples
 
 ```dart
-import 'package:mysql_client/mysql_client.dart';
+import 'package:mysql_client_plus/mysql_client.dart';
 
 Future<void> main(List<String> arguments) async {
   print("Connecting to mysql server...");
@@ -63,4 +63,3 @@ Future<void> main(List<String> arguments) async {
 }
 
 ```
-

@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
-import 'package:mysql_client/exception.dart';
+import 'package:mysql_dart/exception.dart';
 import 'package:tuple/tuple.dart';
 
 extension MySQLUint8ListExtension on Uint8List {
@@ -36,7 +36,6 @@ extension MySQLUint8ListExtension on Uint8List {
 extension MySQLByteDataExtension on ByteData {
   Tuple2<BigInt, int> getVariableEncInt(int startOffset) {
     int firstByte = getUint8(startOffset);
-
     if (firstByte < 0xfb) {
       return Tuple2(BigInt.from(firstByte), 1);
     }

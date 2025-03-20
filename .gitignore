@@ -6,3 +6,5 @@
 build/
 pubspec.lock
 .vscode/
+
+merged_mysql.dart_code.dart.txt

@@ -18,7 +18,7 @@ Tested with:
 * [x] Auth using caching_sha2_password (default since MySQL 8)
 * [x] Iterating large result sets
 * [x] Typed data access
-* [ ] Send data in binary form when using prepared stmts (do not convert all into strings)
+* [x] Send data in binary form when using prepared stmts (do not convert all into strings)
 * [x] Multiple resul sets
 
 ### Usage
@@ -184,24 +184,3 @@ As a general rule, if cause of exception is MySQL server error packet, connectio
 It's up to developer to check connection state after catching exception.
 Inside your catch block, you can check connection status using **conn.connected** getter and decide what to do next.
 
-### Troubleshooting
-
-There is separate **logging** branch of mysql_client. This branch will stay in sync with **main** branch of this repository, with one main difference - it has logging enabled.
-
-If you have issues, you can temporary switch to logging branch, run your app with **--enable-asserts** and check log messages.
-
-Here is how you can switch to logging branch in your pubspec.yaml file:
-
-```yaml
- mysql_client: 
-    git: 
-      url: https://github.com/zim32/mysql.dart.git
-      ref: logging
-```
-
-Don't forget to switch back again, when you're done with debugging.
-
-
-### Support the author 🇺🇦
-
-If you like this project and want to support the author, you can [donate](https://www.paypal.com/donate/?hosted_button_id=HTNVERGX58MCQ) me via paypal donations service.

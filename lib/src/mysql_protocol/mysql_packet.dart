@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 import 'package:buffer/buffer.dart' show ByteDataWriter;
 import 'package:crypto/crypto.dart' as crypto;
-import 'package:mysql_client/mysql_protocol.dart';
-import 'package:mysql_client/exception.dart';
+import 'package:mysql_dart/mysql_protocol.dart';
+import 'package:mysql_dart/exception.dart';
 import 'package:tuple/tuple.dart' show Tuple2;
 
 const mysqlCapFlagClientLongPassword = 0x00000001;

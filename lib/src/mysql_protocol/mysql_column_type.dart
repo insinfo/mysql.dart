@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'package:tuple/tuple.dart';
-import 'package:mysql_client/exception.dart';
-import 'package:mysql_client/mysql_protocol_extension.dart';
+import 'package:mysql_dart/exception.dart';
+import 'package:mysql_dart/mysql_protocol_extension.dart';
 
 const mysqlColumnTypeDecimal = 0x00;
 const mysqlColumnTypeTiny = 0x01;
@@ -16,7 +16,7 @@ const mysqlColumnTypeInt24 = 0x09;
 const mysqlColumnTypeDate = 0x0a;
 const mysqlColumnTypeTime = 0x0b;
 const mysqlColumnTypeDateTime = 0x0c;
-const mysqlColumnTypeYear = 0x0d;
+const mysqlColumnTypeYear = 0x0d; //13
 const mysqlColumnTypeNewDate = 0x0e;
 const mysqlColumnTypeVarChar = 0x0f;
 const mysqlColumnTypeBit = 0x10;
@@ -236,15 +236,12 @@ Tuple2<String, int> parseBinaryColumnData(
     case mysqlColumnTypeDateTime:
     case mysqlColumnTypeTimestamp:
       final initialOffset = startOffset;
-
       // read number of bytes (0, 4, 7, 11)
       final numOfBytes = data.getUint8(startOffset);
       startOffset += 1;
-
       if (numOfBytes == 0) {
         return Tuple2("0000-00-00 00:00:00", 1);
       }
-
       var year = 0;
       var month = 0;
       var day = 0;
@@ -252,95 +249,79 @@ Tuple2<String, int> parseBinaryColumnData(
       var minute = 0;
       var second = 0;
       var microSecond = 0;
-
       if (numOfBytes >= 4) {
         year = data.getUint16(startOffset, Endian.little);
         startOffset += 2;
-
         month = data.getUint8(startOffset);
         startOffset += 1;
-
         day = data.getUint8(startOffset);
         startOffset += 1;
       }
-
       if (numOfBytes >= 7) {
         hour = data.getUint8(startOffset);
         startOffset += 1;
-
         minute = data.getUint8(startOffset);
         startOffset += 1;
-
         second = data.getUint8(startOffset);
         startOffset += 1;
       }
-
       if (numOfBytes >= 11) {
         microSecond = data.getUint32(startOffset, Endian.little);
         startOffset += 4;
       }
-
-      final result = StringBuffer();
-      result.write(year.toString() + '-');
-      result.write(month.toString().padLeft(2, '0') + '-');
-      result.write(day.toString().padLeft(2, '0') + ' ');
-      result.write(hour.toString().padLeft(2, '0') + ':');
-      result.write(minute.toString().padLeft(2, '0') + ':');
-      result.write(second.toString().padLeft(2, '0') + '.');
-      result.write(microSecond.toString());
-
+      final result = StringBuffer()
+        ..write('$year-')
+        ..write('${month.toString().padLeft(2, '0')}-')
+        ..write('${day.toString().padLeft(2, '0')} ')
+        ..write('${hour.toString().padLeft(2, '0')}:')
+        ..write('${minute.toString().padLeft(2, '0')}:')
+        ..write('${second.toString().padLeft(2, '0')}');
+      if (numOfBytes >= 11) {
+        result.write('.$microSecond');
+      }
       return Tuple2(result.toString(), startOffset - initialOffset);
     case mysqlColumnTypeTime:
+    case mysqlColumnTypeTime2: // Tratamento para TIME2 (tipo 13)
       final initialOffset = startOffset;
-
       // read number of bytes (0, 8, 12)
       final numOfBytes = data.getUint8(startOffset);
       startOffset += 1;
-
       if (numOfBytes == 0) {
         return Tuple2("00:00:00", 1);
       }
-
       var isNegative = false;
       var days = 0;
       var hours = 0;
       var minutes = 0;
       var seconds = 0;
       var microSecond = 0;
-
       if (numOfBytes >= 8) {
         isNegative = data.getUint8(startOffset) > 0;
         startOffset += 1;
-
         days = data.getUint32(startOffset, Endian.little);
         startOffset += 4;
-
         hours = data.getUint8(startOffset);
         startOffset += 1;
-
         minutes = data.getUint8(startOffset);
         startOffset += 1;
-
         seconds = data.getUint8(startOffset);
         startOffset += 1;
       }
-
       if (numOfBytes >= 12) {
         microSecond = data.getUint32(startOffset, Endian.little);
         startOffset += 4;
       }
-
       hours += days * 24;
-
       final result = StringBuffer();
       if (isNegative) {
         result.write("-");
       }
-      result.write(hours.toString().padLeft(2, '0') + ':');
-      result.write(minutes.toString().padLeft(2, '0') + ':');
-      result.write(seconds.toString().padLeft(2, '0') + '.');
-      result.write(microSecond.toString());
-
+      result.write('${hours.toString().padLeft(2, '0')}:');
+      result.write('${minutes.toString().padLeft(2, '0')}:');
+      result.write('${seconds.toString().padLeft(2, '0')}');
+      if (numOfBytes >= 12) {
+        result.write('.${microSecond.toString()}');
+      }
       return Tuple2(result.toString(), startOffset - initialOffset);
     case mysqlColumnTypeString:
     case mysqlColumnTypeVarString:
@@ -356,6 +337,9 @@ Tuple2<String, int> parseBinaryColumnData(
     case mysqlColumnTypeDecimal:
     case mysqlColumnTypeNewDecimal:
       return buffer.getUtf8LengthEncodedString(startOffset);
+    case mysqlColumnTypeYear: // Implementação do YEAR (0x0d)
+      final yearValue = data.getUint16(startOffset, Endian.little);
+      return Tuple2(yearValue.toString(), 2);
   }
 
   throw MySQLProtocolException(

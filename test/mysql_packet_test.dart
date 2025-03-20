@@ -2,8 +2,8 @@ import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:hex/hex.dart';
 import 'package:test/test.dart';
-import 'package:mysql_client/mysql_protocol.dart';
-import 'package:mysql_client/mysql_protocol_extension.dart';
+import 'package:mysql_dart/mysql_protocol.dart';
+import 'package:mysql_dart/mysql_protocol_extension.dart';
 
 void main() {
   group("testing variable length int", () {
