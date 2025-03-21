@@ -4,6 +4,7 @@
 [![Pub Package](https://img.shields.io/pub/v/mysql_dart.svg)](https://pub.dev/packages/mysql_dart)  
 
 ## Support My Work
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/isaqueneves)
 
 I’m on @buymeacoffee. If you like my work, you can buy me a ☕ and share your thoughts 🎉 [Buy me a coffee](https://www.buymeacoffee.com/isaqueneves)
 
