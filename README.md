@@ -3,6 +3,10 @@
 [![CI](https://github.com/insinfo/mysql.dart/actions/workflows/dart.yml/badge.svg)](https://github.com/insinfo/mysql.dart/actions/workflows/dart.yml)
 [![Pub Package](https://img.shields.io/pub/v/mysql_dart.svg)](https://pub.dev/packages/mysql_dart)  
 
+## Support My Work
+
+I’m on @buymeacoffee. If you like my work, you can buy me a ☕ and share your thoughts 🎉 [Buy me a coffee](https://www.buymeacoffee.com/isaqueneves)
+
 #### fork from https://github.com/zim32/mysql.dart
 
 See [example](example/) directory for examples and usage
