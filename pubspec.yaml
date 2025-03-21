@@ -1,6 +1,6 @@
 name: mysql_dart
 description: Native MySQL client written in Dart. Tested with MySQL Percona Server (5.7, 8), MariaDB (10). Supports TLS.
-version: 0.0.31
+version: 1.0.0
 homepage: https://github.com/insinfo/mysql.dart
 repository: https://github.com/insinfo/mysql.dart
 
@@ -12,7 +12,7 @@ platforms:
   windows:
 
 environment:
-  sdk: '>=2.16.0 <4.0.0'
+  sdk: ^2.16.0
 
 dependencies: 
   buffer: ^1.2.3

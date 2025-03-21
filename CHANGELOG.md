@@ -1,3 +1,35 @@
+## 1.0.0
+- implemented "provide SSL certificates in createConnection"
+```dart
+ final SecurityContext context = SecurityContext(withTrustedRoots: true);
+    final sslConn = await MySQLConnection.createConnection(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      secure: true,
+      securityContext: context, 
+      onBadCertificate: (certificate) => true, 
+    );
+    await sslConn.connect();
+```
+- implemented blob support
+```dart
+ await connection.execute(
+        "CREATE TABLE binary_test (id INT AUTO_INCREMENT PRIMARY KEY, data BLOB)");
+    final binaryData = Uint8List.fromList([0, 255, 127, 128]);
+    final stmt =
+        await connection.prepare("INSERT INTO binary_test (data) VALUES (?)");
+    final res = await stmt.execute([binaryData]);
+    expect(res.affectedRows.toInt(), equals(1));
+    await stmt.deallocate();
+    final result = await connection.execute("SELECT data FROM binary_test");
+    final row = result.rows.first;
+    expect(row.typedColByName<Uint8List>("data"), equals(binaryData));
+```
+- implemented more tests and fix bugs
+
 ## 0.0.30
 
 * feat: Binary prepared statements with enhanced integration and unit tests

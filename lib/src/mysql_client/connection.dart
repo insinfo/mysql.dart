@@ -21,6 +21,11 @@ enum _MySQLConnectionState {
 /// Use [MySQLConnection.createConnection] to create connection
 class MySQLConnection {
   Socket _socket;
+
+  Socket getSocket() {
+    return _socket;
+  }
+
   bool _connected = false;
   StreamSubscription<Uint8List>? _socketSubscription;
   _MySQLConnectionState _state = _MySQLConnectionState.fresh;
@@ -37,6 +42,9 @@ class MySQLConnection {
   int _serverCapabilities = 0;
   String? _activeAuthPluginName;
   int _timeoutMs = 10000;
+
+  SecurityContext? _securityContext;
+  bool Function(X509Certificate certificate)? _onBadCertificate;
 
   MySQLConnection._({
     required Socket socket,
@@ -78,6 +86,8 @@ class MySQLConnection {
     bool secure = true,
     String? databaseName,
     String collation = 'utf8mb4_general_ci',
+    SecurityContext? securityContext,
+    bool Function(X509Certificate certificate)? onBadCertificate,
   }) async {
     // Logger.level = loggingLevel;
     // logger.d("Establishing socket connection");
@@ -96,6 +106,10 @@ class MySQLConnection {
       secure: secure,
       collation: collation,
     );
+
+    // Armazena os parâmetros de SSL no cliente (adicione esses campos na classe)
+    client._securityContext = securityContext;
+    client._onBadCertificate = onBadCertificate;
 
     return client;
   }
@@ -365,10 +379,13 @@ class MySQLConnection {
 
         _socketSubscription?.pause();
 
+      
         final secureSocket = await SecureSocket.secure(
           _socket,
-          onBadCertificate: (certificate) => true,
+          context: _securityContext, // novo parâmetro
+          onBadCertificate: _onBadCertificate ?? ((cert) => true),
         );
+        
         // logger.d("SSL connection established");
         // switch socket
         _socket = secureSocket;
@@ -454,6 +471,7 @@ class MySQLConnection {
     String query, [
     Map<String, dynamic>? params,
     bool iterable = false,
+    Duration? queryTimeout,
   ]) async {
     if (!_connected) {
       throw MySQLClientException("Can not execute query: connection closed");
@@ -556,7 +574,7 @@ class MySQLConnection {
                 return;
               }
 
-              packet = MySQLPacket.decodeResultSetRowPacket(data, colsCount);
+              packet = MySQLPacket.decodeResultSetRowPacket(data, colDefs);
               final values = (packet.payload as MySQLResultSetRowPacket).values;
               sink!.add(ResultSetRow._(colDefs: colDefs, values: values));
               packet = null;
@@ -599,7 +617,7 @@ class MySQLConnection {
                 }
               }
 
-              packet = MySQLPacket.decodeResultSetRowPacket(data, colsCount);
+              packet = MySQLPacket.decodeResultSetRowPacket(data, colDefs);
               break;
             }
         }
@@ -621,6 +639,7 @@ class MySQLConnection {
             return;
           } else if (payload is MySQLColumnDefinitionPacket) {
             colDefs.add(payload);
+
             if (colDefs.length == colsCount) {
               state = 2;
             }
@@ -639,6 +658,7 @@ class MySQLConnection {
           }
         }
       } catch (e) {
+        //print('execute $e $s');
         completer.completeError(e, StackTrace.current);
         _forceClose();
       }
@@ -646,7 +666,20 @@ class MySQLConnection {
 
     _socket.add(packet.encode());
 
-    return completer.future;
+    //return completer.future;
+
+    // Aqui aplicamos o timeout, caso fornecido. Se queryTimeout == null,
+    // não haverá timeout. Caso contrário, se estourar, geramos exceção.
+    final futureResult = completer.future;
+    if (queryTimeout != null) {
+      return futureResult.timeout(queryTimeout, onTimeout: () {
+        // Se estourar, podemos fazer algo como:
+        //_forceClose();
+        throw MySQLClientException("Query timed out after $queryTimeout");
+      });
+    } else {
+      return futureResult;
+    }
   }
 
   /// Execute [callback] inside database transaction
@@ -660,20 +693,20 @@ class MySQLConnection {
     _inTransaction = true;
 
     // Desativa o autocommit
-   // await execute("SET autocommit = 0");
+    // await execute("SET autocommit = 0");
     await execute("START TRANSACTION");
 
     try {
       final result = await callback(this);
       await execute("COMMIT");
       // Reativa o autocommit após commit
-     // await execute("SET autocommit = 1");
+      // await execute("SET autocommit = 1");
       _inTransaction = false;
       return result;
     } catch (e) {
       await execute("ROLLBACK");
       // Reativa o autocommit após rollback
-     // await execute("SET autocommit = 1");
+      // await execute("SET autocommit = 1");
       _inTransaction = false;
       rethrow;
     }
@@ -990,6 +1023,7 @@ class MySQLConnection {
               final values =
                   (packet.payload as MySQLBinaryResultSetRowPacket).values;
               sink!.add(ResultSetRow._(colDefs: colDefs, values: values));
+
               packet = null;
               break;
             } else {
@@ -1037,6 +1071,7 @@ class MySQLConnection {
             return;
           } else if (payload is MySQLColumnDefinitionPacket) {
             colDefs.add(payload);
+            //  print(  '  _executePreparedStmt [Debug] -> Column definition: name=${payload.name}, type=${payload.type.intVal}');
             if (colDefs.length == colsCount) {
               state = 2;
             }
@@ -1065,6 +1100,7 @@ class MySQLConnection {
   }
 
   // adicionei esta função para determinar os tipos
+  /// Função para determinar o tipo MySQL correspondente a [param].
   MySQLColumnType? _determineParamType(dynamic param) {
     if (param == null) {
       return MySQLColumnType.nullType;
@@ -1083,11 +1119,13 @@ class MySQLConnection {
       return MySQLColumnType.doubleType;
     } else if (param is String) {
       // Poderia haver lógica adicional para diferenciar entre varStringType e stringType
+
       return MySQLColumnType.varStringType;
     } else if (param is DateTime) {
       return MySQLColumnType.dateTimeType;
     } else if (param is bool) {
       // Valores booleanos geralmente são representados como TINYINT(1)
+
       return MySQLColumnType.tinyType;
     } else if (param is Uint8List) {
       // Escolhe o tipo BLOB com base no tamanho dos dados
@@ -1099,11 +1137,12 @@ class MySQLConnection {
       } else if (len <= 16777215) {
         return MySQLColumnType.longBlobType;
       } else {
-        return MySQLColumnType.blocType;
+        return MySQLColumnType.blobType;
       }
     } else {
       throw MySQLClientException(
-          "Unsupported parameter type: ${param.runtimeType}");
+        "Unsupported parameter type: ${param.runtimeType}",
+      );
     }
   }
 
@@ -1506,11 +1545,13 @@ class EmptyResultSet extends IResultSet {
 /// Represents result set row data
 class ResultSetRow {
   final List<MySQLColumnDefinitionPacket> _colDefs;
-  final List<String?> _values;
+  // isaque alterei String? to dynamic
+  final List<dynamic> _values;
 
   ResultSetRow._({
     required List<MySQLColumnDefinitionPacket> colDefs,
-    required List<String?> values,
+    // isaque alterei String? to dynamic
+    required List<dynamic> values,
   })  : _colDefs = colDefs,
         _values = values;
 
@@ -1518,7 +1559,7 @@ class ResultSetRow {
   int get numOfColumns => _colDefs.length;
 
   /// Get column data by column index (starting form 0)
-  String? colAt(int colIndex) {
+  dynamic colAt(int colIndex) {
     if (colIndex >= _values.length) {
       throw MySQLClientException("Column index is out of range");
     }
@@ -1542,8 +1583,9 @@ class ResultSetRow {
         .convertStringValueToProvidedType<T>(value, colDef.columnLength);
   }
 
+  //isaqye Modifica colByName
   /// Get column data by column name
-  String? colByName(String columnName) {
+  dynamic colByName(String columnName) {
     final colIndex = _colDefs.indexWhere(
       (element) => element.name.toLowerCase() == columnName.toLowerCase(),
     );
@@ -1580,9 +1622,10 @@ class ResultSetRow {
         .convertStringValueToProvidedType<T>(value, colDef.columnLength);
   }
 
+  //Modifica assoc
   /// Get data for all columns
-  Map<String, String?> assoc() {
-    final result = <String, String?>{};
+  Map<String, dynamic> assoc() {
+    final result = <String, dynamic>{};
 
     int colIndex = 0;
 

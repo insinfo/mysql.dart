@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:mysql_dart/mysql_dart.dart';
 
 /// Class to create and manage pool of database connections
@@ -10,6 +11,8 @@ class MySQLConnectionPool {
   final int maxConnections;
   final String? databaseName;
   final bool secure;
+  final SecurityContext? securityContext;
+  final bool Function(X509Certificate certificate)? onBadCertificate;
   final String collation;
   final int timeoutMs;
 
@@ -31,6 +34,8 @@ class MySQLConnectionPool {
     this.secure = true,
     this.collation = 'utf8_general_ci',
     this.timeoutMs = 10000,
+    this.securityContext,
+    this.onBadCertificate,
   }) : _password = password;
 
   /// Number of active connections in this pool
@@ -124,6 +129,8 @@ class MySQLConnectionPool {
         databaseName: databaseName,
         secure: secure,
         collation: collation,
+        securityContext: securityContext,
+        onBadCertificate: onBadCertificate,
       );
 
       await conn.connect(timeoutMs: timeoutMs);
