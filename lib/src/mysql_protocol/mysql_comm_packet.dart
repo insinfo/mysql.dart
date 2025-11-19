@@ -298,6 +298,7 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
     final hour = dateTime.hour;
     final minute = dateTime.minute;
     final second = dateTime.second;
+    final millisecond = dateTime.millisecond;
     final microsecond = dateTime.microsecond;
 
     // Caso todos os valores sejam zero, escreve 0 (sem dados de data/hora).
@@ -307,12 +308,13 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
         hour == 0 &&
         minute == 0 &&
         second == 0 &&
+        millisecond == 0 &&
         microsecond == 0) {
       buffer.writeUint8(0);
       return;
     }
 
-    if (microsecond > 0) {
+    if (millisecond > 0 || microsecond > 0) {
       // 11 bytes: 1 de comprimento, 2 para ano, 1 p/ mês, 1 p/ dia,
       // 1 p/ hora, 1 p/ min, 1 p/ seg, 4 p/ microsegundos
       buffer.writeUint8(11);
@@ -322,7 +324,7 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       buffer.writeUint8(hour);
       buffer.writeUint8(minute);
       buffer.writeUint8(second);
-      buffer.writeUint32(microsecond, Endian.little);
+      buffer.writeUint32(microsecond + millisecond * 1000, Endian.little);
     } else if (hour > 0 || minute > 0 || second > 0) {
       // 7 bytes: 1 de comprimento, 2 p/ ano, 1 p/ mês, 1 p/ dia,
       // 1 p/ hora, 1 p/ min, 1 p/ seg
