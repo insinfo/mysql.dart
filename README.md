@@ -44,8 +44,21 @@ final pool = MySQLConnectionPool(
   password: 'your_password',
   maxConnections: 10,
   databaseName: 'your_database_name', // optional,
+  timeZone: '+00:00', // optional: issues SET time_zone right after connect
+  idleTestThreshold: Duration(seconds: 30), // validates idle connections
+  maxConnectionAge: Duration(hours: 6),
+  onConnectionOpen: (conn) async {
+    await conn.execute("SET @app_name = 'api'");
+  },
+  retryOptions: MySQLPoolRetryOptions(
+    maxAttempts: 3,
+    delay: Duration(milliseconds: 100),
+    retryIf: (error) => error is SocketException,
+  ),
 );
 ```
+
+Starting with version `1.2.1`, the pool exposes extra controls: it validates idle connections, recycles long-lived sessions, lets you apply custom `time_zone`/collation tweaks inside `onConnectionOpen`, and offers a basic **retry** policy (via `MySQLPoolRetryOptions`). For visibility, call `pool.status()` to inspect the active, idle, and pending connection counters.
 
 #### Or single connection
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:tuple/tuple.dart';
 import 'package:mysql_dart/exception.dart';
@@ -448,8 +449,8 @@ Tuple2<dynamic, int> parseBinaryColumnData(
     case mysqlColumnTypeNewDecimal:
       {
         final lengthEncoded = buffer.getLengthEncodedBytes(startOffset);
-        // Converte ASCII para string, p. ex. "99.99"
-        final strValue = String.fromCharCodes(lengthEncoded.item1);
+        // Valores numéricos vêm como texto no protocolo textual; decodifique em UTF-8.
+        final strValue = utf8.decode(lengthEncoded.item1, allowMalformed: true);
         return Tuple2(strValue, lengthEncoded.item2);
       }
 

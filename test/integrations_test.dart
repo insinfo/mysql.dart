@@ -139,6 +139,32 @@ void main() {
     expect(result.affectedRows.toInt(), equals(1));
     await stmt.deallocate();
   });
+  
+  test('Strings com acentuação são preservadas em ambos os protocolos', () async {
+    const accented = 'Notícias – çãõáéíú';
+
+    // Insere via prepared statement (protocolo binário na ida)
+    final insertStmt =
+        await conn!.prepare('INSERT INTO my_table (string_column) VALUES (?)');
+    final insertResult = await insertStmt.execute([accented]);
+    expect(insertResult.affectedRows.toInt(), equals(1));
+    final insertedId = insertResult.lastInsertID.toInt();
+    await insertStmt.deallocate();
+
+    // Consulta textual pura (sem parâmetros) deve retornar com UTF-8 correto
+    final textualResult = await conn!
+        .execute('SELECT string_column FROM my_table WHERE id = $insertedId');
+    expect(textualResult.numOfRows, greaterThan(0));
+    expect(textualResult.rows.first.colAt(0), equals(accented));
+
+    // Consulta preparada (protocolo binário) também deve preservar os acentos
+    final binaryStmt = await conn!
+        .prepare('SELECT string_column FROM my_table WHERE id = ?');
+    final binaryResult = await binaryStmt.execute([insertedId]);
+    expect(binaryResult.numOfRows, greaterThan(0));
+    expect(binaryResult.rows.first.colAt(0), equals(accented));
+    await binaryStmt.deallocate();
+  });
   final dt = DateTime(2023, 6, 15, 10, 20, 30);
   final blobData = Uint8List.fromList([0x01, 0x02, 0x03]);
 

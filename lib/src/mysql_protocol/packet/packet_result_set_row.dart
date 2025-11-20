@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
@@ -48,7 +49,9 @@ class MySQLResultSetRowPacket extends MySQLPacketPayload {
           // Se for BLOB/binário, guardamos como bytes; caso contrário, convertemos p/ String
           values.add(lengthEncoded.item1); // Uint8List
         } else {
-          final strValue = String.fromCharCodes(lengthEncoded.item1);
+          // MySQL always sends textual protocol data using the negotiated connection charset (utf8mb4 by default),
+          // so decode as UTF-8 to keep accents and emojis intact.
+          final strValue = utf8.decode(lengthEncoded.item1, allowMalformed: true);
           values.add(strValue);
         }
       }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 
@@ -184,5 +185,195 @@ void main() {
     final values = result.rows.map((row) => row.colByName("value")).toList();
     expect(values, containsAll(['10', '20']));
     await pool.execute("DROP TABLE IF EXISTS temp_test_rollback");
+  });
+
+  test('Aplica timeZone e callback onOpen', () async {
+    bool hookCalled = false;
+    final customPool = MySQLConnectionPool(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      maxConnections: 1,
+      secure: false,
+      timeZone: '+00:00',
+      onConnectionOpen: (conn) async {
+        hookCalled = true;
+        await conn.execute('SET @pool_open_hook = 1');
+      },
+    );
+
+    try {
+      final tz = await customPool.withConnection((conn) async {
+        final res = await conn.execute('SELECT @@session.time_zone as tz');
+        return res.rows.first.colByName('tz');
+      });
+
+      expect(hookCalled, isTrue);
+      expect(tz, equals('+00:00'));
+    } finally {
+      await customPool.close();
+    }
+  });
+
+  test('Recicla conexões antigas e testa idle', () async {
+    final recyclingPool = MySQLConnectionPool(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      maxConnections: 1,
+      secure: false,
+      maxConnectionAge: const Duration(milliseconds: 1),
+      maxSessionUse: const Duration(milliseconds: 1),
+      idleTestThreshold: Duration.zero,
+    );
+
+    try {
+      final firstId = await recyclingPool.withConnection((conn) async {
+        final res = await conn.execute('SELECT CONNECTION_ID() AS cid');
+        return res.rows.first.colByName('cid');
+      });
+
+      await Future.delayed(const Duration(milliseconds: 5));
+
+      final secondId = await recyclingPool.withConnection((conn) async {
+        final res = await conn.execute('SELECT CONNECTION_ID() AS cid');
+        return res.rows.first.colByName('cid');
+      });
+
+      expect(secondId, isNot(equals(firstId)));
+      expect(recyclingPool.status().totalConnections, lessThanOrEqualTo(1));
+    } finally {
+      await recyclingPool.close();
+    }
+  });
+
+  test('Retry básico reexecuta callback', () async {
+    int attempts = 0;
+    final retryPool = MySQLConnectionPool(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      maxConnections: 1,
+      secure: false,
+      retryOptions: MySQLPoolRetryOptions(
+        maxAttempts: 2,
+        delay: const Duration(milliseconds: 10),
+        retryIf: (_) => true,
+      ),
+    );
+
+    try {
+      final result = await retryPool.withConnection((conn) async {
+        attempts++;
+        if (attempts == 1) {
+          throw Exception('Falha temporária');
+        }
+        final res = await conn.execute('SELECT 1 AS ok');
+        return res.rows.first.colByName('ok');
+      });
+
+      expect(result, equals('1'));
+      expect(attempts, equals(2));
+    } finally {
+      await retryPool.close();
+    }
+  });
+
+  test('Respeita maxConnections e enfileira tarefas', () async {
+    final limitedPool = MySQLConnectionPool(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      maxConnections: 2,
+      secure: false,
+    );
+
+    int concurrentConnections = 0;
+    int maxObserved = 0;
+
+    Future<void> runTask() async {
+      await limitedPool.withConnection((conn) async {
+        concurrentConnections++;
+        maxObserved = max(maxObserved, concurrentConnections);
+        // Mantém a conexão ocupada por um curto período para forçar espera nas demais tarefas.
+        await Future.delayed(const Duration(milliseconds: 150));
+        concurrentConnections--;
+      });
+    }
+
+    try {
+      await Future.wait(List.generate(5, (_) => runTask()));
+      expect(maxObserved, equals(2),
+          reason: 'O pool não deve permitir mais conexões do que maxConnections');
+      expect(limitedPool.allConnectionsQty, lessThanOrEqualTo(2));
+    } finally {
+      await limitedPool.close();
+    }
+  });
+
+  test('withConnection libera conexão mesmo quando há erro', () async {
+    final tempPool = MySQLConnectionPool(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      maxConnections: 1,
+      secure: false,
+    );
+
+    try {
+      await expectLater(
+        () async {
+          await tempPool.withConnection((conn) async {
+            throw Exception('Falha proposital');
+          });
+        },
+        throwsException,
+      );
+
+      expect(tempPool.activeConnectionsQty, equals(0));
+      expect(tempPool.idleConnectionsQty, equals(1));
+
+      // Ainda deve ser possível usar a mesma conexão após o erro.
+      final value = await tempPool.withConnection((conn) async {
+        final res = await conn.execute('SELECT 1');
+        return res.rows.first.colAt(0);
+      });
+      expect(value, equals('1'));
+    } finally {
+      await tempPool.close();
+    }
+  });
+
+  test('close encerra todas as conexões e limpa listas internas', () async {
+    final closingPool = MySQLConnectionPool(
+      host: 'localhost',
+      port: 3306,
+      userName: 'dart',
+      password: 'dart',
+      databaseName: 'banco_teste',
+      maxConnections: 2,
+      secure: false,
+    );
+
+    await closingPool.withConnection((conn) async {
+      await conn.execute('SELECT 1');
+    });
+
+    expect(closingPool.allConnectionsQty, greaterThanOrEqualTo(1));
+
+    await closingPool.close();
+
+    expect(closingPool.activeConnectionsQty, equals(0));
+    expect(closingPool.idleConnectionsQty, equals(0));
   });
 }

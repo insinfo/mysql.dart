@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/exception.dart';
@@ -84,7 +85,8 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
         offset += parseResult.item2;
         var value = parseResult.item1;
         if (value is Uint8List && columnShouldBeTextual(colDefs[x])) {
-          value = String.fromCharCodes(value);
+          // Prepared statements also deliver textual blobs using the negotiated charset; decode accordingly.
+          value = utf8.decode(value, allowMalformed: true);
         }
         values.add(value);
       }

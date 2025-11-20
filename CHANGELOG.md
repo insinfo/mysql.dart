@@ -1,3 +1,10 @@
+## 1.2.1
+
+- fix: textual and binary result sets now decode strings with UTF-8 so accented characters appear correctly
+- fix: connection pool returns connections to the idle queue even when `withConnection` callbacks throw, preventing resource leaks
+- fix: connection pool enforces `maxConnections` even when multiple connections are being established concurrently
+- feat: `MySQLConnectionPool` gained idle connection validation, recycling by age/usage, `timeZone`, `onConnectionOpen` callback, basic retry policy, and `status()` method for inspection.
+
 ## 1.2.0
 
 - feat: `MySQLConnection.execute` now accepts positional lists and named maps directly; when parameters are present the driver auto-prepares, caches, and executes statements over the binary protocol so blobs/bytes are handled transparently
