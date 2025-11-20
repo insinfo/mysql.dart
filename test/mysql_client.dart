@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
@@ -543,10 +544,10 @@ create table book
         expect(typedAssoc['col_varchar'].runtimeType, String);
         expect(typedAssoc['col_binary'].runtimeType, String);
         expect(typedAssoc['col_varbinary'].runtimeType, String);
-        expect(typedAssoc['col_tinyblob'].runtimeType, String);
-        expect(typedAssoc['col_blob'].runtimeType, String);
-        expect(typedAssoc['col_mediumblob'].runtimeType, String);
-        expect(typedAssoc['col_longblob'].runtimeType, String);
+        expect(typedAssoc['col_tinyblob'], isA<Uint8List>());
+        expect(typedAssoc['col_blob'], isA<Uint8List>());
+        expect(typedAssoc['col_mediumblob'], isA<Uint8List>());
+        expect(typedAssoc['col_longblob'], isA<Uint8List>());
         expect(typedAssoc['col_tinytext'].runtimeType, String);
         expect(typedAssoc['col_text'].runtimeType, String);
         expect(typedAssoc['col_mediumtext'].runtimeType, String);

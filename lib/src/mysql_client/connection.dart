@@ -42,6 +42,9 @@ class MySQLConnection {
   int _serverCapabilities = 0;
   String? _activeAuthPluginName;
   int _timeoutMs = 10000;
+  static const int _autoPreparedStmtCacheCapacity = 32;
+  final LinkedHashMap<String, PreparedStmt> _autoPreparedStmtCache =
+      LinkedHashMap();
 
   SecurityContext? _securityContext;
   bool Function(X509Certificate certificate)? _onBadCertificate;
@@ -462,20 +465,52 @@ class MySQLConnection {
     _responseCallback!(data);
   }
 
-  /// Executes given [query]
+  /// Executes a SQL [query].
   ///
-  /// [execute] can be used to make any query type (SELECT, INSERT, UPDATE)
-  /// You can pass named parameters using [params]
-  /// Pass [iterable] true if you want to receive rows one by one in Stream fashion
+  /// This convenience method understands three invocation styles:
+  ///
+  /// ```dart
+  /// // 1) Literals only (protocol text):
+  /// final rs = await conn.execute('SELECT NOW() AS ts');
+  ///
+  /// // 2) Named parameters:
+  /// await conn.execute(
+  ///   'INSERT INTO book (title, price) VALUES (:title, :price)',
+  ///   {'title': 'Dart Up', 'price': 42.5},
+  /// );
+  ///
+  /// // 3) Positional parameters:
+  /// await conn.execute(
+  ///   'UPDATE book SET cover = ? WHERE id = ?',
+  ///   [Uint8List.fromList(bytes), 10],
+  /// );
+  /// ```
+  ///
+  /// When [params] is a `Map<String, Object?>` or `List`, the driver transparently
+  /// prepares and caches the statement so that binary values (BLOB/VARBINARY)
+  /// travel via the MySQL binary protocol without manual `prepare()` calls.
+  ///
+  /// Set [iterable] to true to stream rows instead of buffering them all.
   Future<IResultSet> execute(
     String query, [
-    Map<String, dynamic>? params,
+    Object? params,
     bool iterable = false,
     Duration? queryTimeout,
   ]) async {
     if (!_connected) {
       throw MySQLClientException("Can not execute query: connection closed");
     }
+
+    final plan = _buildExecutePlan(query, params);
+
+    if (plan.usePrepared) {
+      final stmt = await _getOrCreateAutoPreparedStmt(plan.query, iterable);
+      final futureResult =
+          _executePreparedStmt(stmt, plan.positionalParams, iterable);
+      return _applyQueryTimeout(futureResult, queryTimeout);
+    }
+
+    query = plan.query;
 
     // wait for ready state
     if (_state != _MySQLConnectionState.connectionEstablished) {
@@ -484,15 +519,6 @@ class MySQLConnection {
     }
 
     _state = _MySQLConnectionState.waitingCommandResponse;
-
-    if (params != null && params.isNotEmpty) {
-      try {
-        query = _substitureParams(query, params);
-      } catch (e) {
-        _state = _MySQLConnectionState.connectionEstablished;
-        rethrow;
-      }
-    }
 
     final payload = MySQLPacketCommQuery(query: query);
 
@@ -666,20 +692,7 @@ class MySQLConnection {
 
     _socket.add(packet.encode());
 
-    //return completer.future;
-
-    // Aqui aplicamos o timeout, caso fornecido. Se queryTimeout == null,
-    // não haverá timeout. Caso contrário, se estourar, geramos exceção.
-    final futureResult = completer.future;
-    if (queryTimeout != null) {
-      return futureResult.timeout(queryTimeout, onTimeout: () {
-        // Se estourar, podemos fazer algo como:
-        //_forceClose();
-        throw MySQLClientException("Query timed out after $queryTimeout");
-      });
-    } else {
-      return futureResult;
-    }
+    return _applyQueryTimeout(completer.future, queryTimeout);
   }
 
   /// Execute [callback] inside database transaction
@@ -712,9 +725,14 @@ class MySQLConnection {
     }
   }
 
-  String _substitureParams(String query, Map<String, dynamic> params) {
-    // convert params to string
-    Map<String, String> convertedParams = {};
+  String _substitureParams(String query, Map<String, Object?> params) {
+    final matches = _findBindableNamedParamMatches(query);
+
+    if (matches.isEmpty) {
+      return query;
+    }
+
+    final convertedParams = <String, String>{};
 
     for (final param in params.entries) {
       String value;
@@ -722,11 +740,11 @@ class MySQLConnection {
       if (param.value == null) {
         value = "NULL";
       } else if (param.value is String) {
-        value = "'${_escapeString(param.value)}'";
+        value = "'${_escapeString(param.value as String)}'";
       } else if (param.value is num) {
         value = param.value.toString();
       } else if (param.value is bool) {
-        value = param.value ? "TRUE" : "FALSE";
+        value = (param.value as bool) ? "TRUE" : "FALSE";
       } else {
         value = "'${_escapeString(param.value.toString())}'";
       }
@@ -734,32 +752,12 @@ class MySQLConnection {
       convertedParams[param.key] = value;
     }
 
-    // find all :placeholders, which can be substituted
-    final pattern = RegExp(r":(\w+)");
-
-    final matches = pattern.allMatches(query).where((match) {
-      final subString = query.substring(0, match.start);
-
-      int count = "'".allMatches(subString).length;
-      if (count > 0 && count.isOdd) {
-        return false;
-      }
-
-      count = '"'.allMatches(subString).length;
-      if (count > 0 && count.isOdd) {
-        return false;
-      }
-
-      return true;
-    }).toList();
-
     int lengthShift = 0;
 
     for (final match in matches) {
       final paramName = match.group(1);
 
-      // check param exists
-      if (false == convertedParams.containsKey(paramName)) {
+      if (paramName == null || !convertedParams.containsKey(paramName)) {
         throw MySQLClientException(
             "There is no parameter with name: $paramName");
       }
@@ -775,6 +773,140 @@ class MySQLConnection {
     }
 
     return query;
+  }
+
+  List<RegExpMatch> _findBindableNamedParamMatches(String query) {
+    final pattern = RegExp(r":(\w+)");
+
+    return pattern.allMatches(query).where((match) {
+      final subString = query.substring(0, match.start);
+
+      int count = "'".allMatches(subString).length;
+      if (count > 0 && count.isOdd) {
+        return false;
+      }
+
+      count = '"'.allMatches(subString).length;
+      if (count > 0 && count.isOdd) {
+        return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
+  _ExecutePlan _buildExecutePlan(String query, Object? params) {
+    if (params == null) {
+      return _ExecutePlan.text(query);
+    }
+
+    if (params is Map) {
+      final mapParams = params.cast<String, Object?>();
+
+      if (mapParams.isEmpty) {
+        return _ExecutePlan.text(query);
+      }
+
+      final conversion = _convertNamedParamsToPositional(query);
+
+      if (conversion.paramNames.isEmpty) {
+        final substitutedQuery = _substitureParams(query, mapParams);
+        return _ExecutePlan.text(substitutedQuery);
+      }
+
+      final positional = conversion.paramNames.map<dynamic>((name) {
+        if (!mapParams.containsKey(name)) {
+          throw MySQLClientException(
+              "There is no parameter with name: $name");
+        }
+
+        return mapParams[name];
+      }).toList();
+
+      return _ExecutePlan.prepared(conversion.query, positional);
+    }
+
+    if (params is List) {
+      if (params.isEmpty) {
+        return _ExecutePlan.text(query);
+      }
+
+      return _ExecutePlan.prepared(
+        query,
+        List<dynamic>.from(params),
+      );
+    }
+
+    throw MySQLClientException(
+      "Unsupported params type: ${params.runtimeType}. Use Map<String, Object?> "
+      "for named params or List for positional params.",
+    );
+  }
+
+  _NamedParamConversionResult _convertNamedParamsToPositional(String query) {
+    final matches = _findBindableNamedParamMatches(query);
+
+    if (matches.isEmpty) {
+      return _NamedParamConversionResult(query, const <String>[]);
+    }
+
+    final buffer = StringBuffer();
+    final names = <String>[];
+    int lastIndex = 0;
+
+    for (final match in matches) {
+      buffer.write(query.substring(lastIndex, match.start));
+      buffer.write('?');
+      names.add(match.group(1)!);
+      lastIndex = match.end;
+    }
+
+    buffer.write(query.substring(lastIndex));
+
+    return _NamedParamConversionResult(buffer.toString(), names);
+  }
+
+  Future<PreparedStmt> _getOrCreateAutoPreparedStmt(
+    String query,
+    bool iterable,
+  ) async {
+    final key = _buildAutoPreparedCacheKey(query, iterable);
+    final cached = _autoPreparedStmtCache.remove(key);
+
+    if (cached != null) {
+      _autoPreparedStmtCache[key] = cached;
+      return cached;
+    }
+
+    final stmt = await prepare(query, iterable);
+    _autoPreparedStmtCache[key] = stmt;
+
+    if (_autoPreparedStmtCache.length > _autoPreparedStmtCacheCapacity) {
+      final oldestKey = _autoPreparedStmtCache.keys.first;
+      final oldestStmt = _autoPreparedStmtCache.remove(oldestKey);
+      if (oldestStmt != null) {
+        unawaited(oldestStmt.deallocate());
+      }
+    }
+
+    return stmt;
+  }
+
+  String _buildAutoPreparedCacheKey(String query, bool iterable) {
+    return '${iterable ? 'iter' : 'plain'}::$query';
+  }
+
+  Future<IResultSet> _applyQueryTimeout(
+    Future<IResultSet> future,
+    Duration? queryTimeout,
+  ) {
+    if (queryTimeout != null) {
+      return future.timeout(queryTimeout, onTimeout: () {
+        throw MySQLClientException("Query timed out after $queryTimeout");
+      });
+    }
+
+    return future;
   }
 
   /// Prepares given [query]
@@ -1222,6 +1354,7 @@ class MySQLConnection {
     _inTransaction = false;
     _incompleteBufferData.clear();
     _lastError = null;
+    _autoPreparedStmtCache.clear();
   }
 
   void _forceClose() {
@@ -1244,6 +1377,7 @@ class MySQLConnection {
     _inTransaction = false;
     _incompleteBufferData.clear();
     _lastError = null;
+    _autoPreparedStmtCache.clear();
   }
 
   Future<void> _waitForState(_MySQLConnectionState state) async {
@@ -1736,4 +1870,25 @@ class PreparedStmt {
   Future<void> deallocate() {
     return _connection._deallocatePreparedStmt(this);
   }
+}
+
+class _ExecutePlan {
+  final bool usePrepared;
+  final String query;
+  final List<dynamic> positionalParams;
+
+  const _ExecutePlan._(this.usePrepared, this.query, this.positionalParams);
+
+  factory _ExecutePlan.text(String query) =>
+    _ExecutePlan._(false, query, const <dynamic>[]);
+
+  factory _ExecutePlan.prepared(String query, List<dynamic> params) =>
+    _ExecutePlan._(true, query, params);
+}
+
+class _NamedParamConversionResult {
+  final String query;
+  final List<String> paramNames;
+
+  const _NamedParamConversionResult(this.query, this.paramNames);
 }

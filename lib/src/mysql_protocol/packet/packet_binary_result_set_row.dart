@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/exception.dart';
+import '../column_utils.dart';
 
 /// Representa um pacote de linha de result set no modo binário.
 ///
@@ -81,7 +82,11 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
         );
         // Avança o offset de acordo com o número de bytes lidos.
         offset += parseResult.item2;
-        values.add(parseResult.item1);
+        var value = parseResult.item1;
+        if (value is Uint8List && columnShouldBeTextual(colDefs[x])) {
+          value = String.fromCharCodes(value);
+        }
+        values.add(value);
       }
     }
 

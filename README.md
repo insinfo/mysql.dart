@@ -71,6 +71,29 @@ By default connection is secure. If you don't want to use SSL (TLS) connection, 
 var result = await pool.execute("SELECT * FROM book WHERE id = :id", {"id": 1});
 ```
 
+#### Passing parameters with `execute()`
+
+`execute()` accepts three invocation styles and, when parameters are present, it transparently switches to the binary protocol (prepared statements under the hood) so that blobs/bytes are transmitted safely and subsequent calls can reuse the cached statement:
+
+```dart
+// 1) Literal query only (text protocol)
+final rs = await conn.execute('SELECT NOW() AS ts');
+
+// 2) Named parameters
+await conn.execute(
+  'INSERT INTO book (title, price) VALUES (:title, :price)',
+  {'title': 'Dart Up', 'price': 42.5},
+);
+
+// 3) Positional parameters
+await conn.execute(
+  'UPDATE book SET cover = ? WHERE id = ?',
+  [Uint8List.fromList(bytes), 10],
+);
+```
+
+If you need to stream results row-by-row instead of buffering the whole result, pass `iterable: true` to `execute()` (or `prepare()`), and consume `rowsStream`.
+
 #### Print result
 ```dart
   for (final row in result.rows) {
@@ -89,6 +112,8 @@ row.typedColAt<int>(0); // returns first column as int
 ```
 
 Look at [example/main_simple_conn.dart](example/main_simple_conn.dart) for other ways of getting column data, including typed data access.
+
+> ⚠️ **Decimal / NewDecimal columns** – the driver deliberately returns `String` for these column types to preserve precision/scale. If you need native arithmetic inside Dart, either cast inside SQL (`CAST(col AS DOUBLE)`), parse manually, or rely on arbitrary-precision packages such as [`decimal`](https://pub.dev/packages/decimal). This behavior is covered in `test/mysql_client.dart` and `test/column_type_test.dart`.
 
 ### Prepared statements
 

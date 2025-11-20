@@ -1,3 +1,9 @@
+## 1.2.0
+
+- feat: `MySQLConnection.execute` now accepts positional lists and named maps directly; when parameters are present the driver auto-prepares, caches, and executes statements over the binary protocol so blobs/bytes are handled transparently
+- fix: textual BLOB/TEXT columns are decoded as UTF‑8 strings consistently (even for auto-prepared/binary protocol queries), matching the associative API expectations
+- docs: README now documents the new `execute()` usage patterns and clarifies that DECIMAL/NEWDECIMAL columns are surfaced as strings to avoid precision loss
+
 ## 1.0.0
 - implemented "provide SSL certificates in createConnection"
 ```dart

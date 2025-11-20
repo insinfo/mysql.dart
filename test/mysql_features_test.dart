@@ -6,6 +6,14 @@ import 'package:mysql_dart/exception.dart';
 import 'package:test/test.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 
+//openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/ca-key.pem -out certs/ca-cert.pem -days 365 -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=MyTestCA"
+//openssl req -newkey rsa:2048 -nodes -keyout certs/server-key.pem  -out certs/server-req.pem -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=localhost"
+//openssl x509 -req  -in certs/server-req.pem  -CA certs/ca-cert.pem  -CAkey certs/ca-key.pem  -CAcreateserial -out certs/server-cert.pem  -days 365
+// colocar em C:\Program Files\MariaDB 10.11\data\my.ini
+// ssl_ca="C:/Program Files/MariaDB 10.11/ssl/ca-cert.pem"
+// ssl_cert="C:/Program Files/MariaDB 10.11/ssl/server-cert.pem"
+// ssl_key="C:/Program Files/MariaDB 10.11/ssl/server-key.pem"
+
 void main() {
   late MySQLConnection connection;
 
@@ -246,6 +254,53 @@ void main() {
     final row = result.rows.first;
     expect(row.typedColByName<Uint8List>("data"), equals(binaryData));
     await connection.execute("DROP TABLE IF EXISTS binary_test");
+  });
+
+  test('Execute: parâmetros posicionais com blobs sem prepare explícito',
+      () async {
+    await connection.execute("DROP TABLE IF EXISTS blob_auto_exec");
+    await connection.execute(
+        "CREATE TABLE blob_auto_exec (id INT AUTO_INCREMENT PRIMARY KEY, data BLOB)");
+
+    final positionalBlob = Uint8List.fromList([1, 2, 3]);
+    await connection.execute(
+      "INSERT INTO blob_auto_exec (data) VALUES (?)",
+      [positionalBlob],
+    );
+
+    final namedBlob = Uint8List.fromList([4, 5, 6]);
+    await connection.execute(
+      "INSERT INTO blob_auto_exec (data) VALUES (:payload)",
+      {"payload": namedBlob},
+    );
+
+    final result = await connection
+        .execute("SELECT data FROM blob_auto_exec ORDER BY id");
+    final rows = result.rows.toList();
+    expect(rows.length, equals(2));
+    expect(rows[0].colByName("data"), equals(positionalBlob));
+    expect(rows[1].colByName("data"), equals(namedBlob));
+
+    await connection.execute("DROP TABLE IF EXISTS blob_auto_exec");
+  });
+
+  test('Execute: TEXT columns stay as strings with named params', () async {
+    await connection.execute("DROP TABLE IF EXISTS text_auto_exec");
+    await connection.execute(
+        "CREATE TABLE text_auto_exec (id INT AUTO_INCREMENT PRIMARY KEY, body LONGTEXT)");
+    await connection.execute(
+        "INSERT INTO text_auto_exec (body) VALUES ('<p>Hello world</p>')");
+
+    final result = await connection.execute(
+      "SELECT body FROM text_auto_exec WHERE id = :id",
+      {"id": 1},
+    );
+
+    final body = result.rows.first.colByName("body");
+    expect(body, isA<String>());
+    expect(body, contains("Hello"));
+
+    await connection.execute("DROP TABLE IF EXISTS text_auto_exec");
   });
 
   test('Multiple result sets', () async {

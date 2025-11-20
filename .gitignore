@@ -8,3 +8,5 @@ pubspec.lock
 .vscode/
 
 merged_mysql.dart_code.dart.txt
+
+mysql_example2.dart

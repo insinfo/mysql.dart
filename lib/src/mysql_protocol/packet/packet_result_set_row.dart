@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+import '../column_utils.dart';
 
 /// Representa um pacote de linha de resultado recebido do servidor MySQL.
 ///
@@ -43,7 +44,7 @@ class MySQLResultSetRowPacket extends MySQLPacketPayload {
         final lengthEncoded = buffer.getLengthEncodedBytes(offset);
         offset += lengthEncoded.item2;
 
-        if (_isBinaryType(colDef.type)) {
+        if (columnShouldBeBinary(colDef)) {
           // Se for BLOB/binário, guardamos como bytes; caso contrário, convertemos p/ String
           values.add(lengthEncoded.item1); // Uint8List
         } else {
@@ -67,12 +68,4 @@ class MySQLResultSetRowPacket extends MySQLPacketPayload {
   ///
   /// Observação: Campos `DECIMAL` e `NEWDECIMAL` **não** entram aqui porque,
   /// no protocolo textual, vêm como texto ASCII (por exemplo, `'99.99'`).
-  static bool _isBinaryType(MySQLColumnType colType) {
-    return colType.intVal == MySQLColumnType.tinyBlobType.intVal ||
-        colType.intVal == MySQLColumnType.mediumBlobType.intVal ||
-        colType.intVal == MySQLColumnType.longBlobType.intVal ||
-        colType.intVal == MySQLColumnType.blobType.intVal ||
-        colType.intVal == MySQLColumnType.geometryType.intVal ||
-        colType.intVal == MySQLColumnType.bitType.intVal;
-  }
 }
