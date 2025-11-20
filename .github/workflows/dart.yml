@@ -60,6 +60,9 @@ jobs:
           sudo cp certs/ca-cert.pem /etc/mysql/certs/
           sudo cp certs/server-cert.pem /etc/mysql/certs/
           sudo cp certs/server-key.pem /etc/mysql/certs/
+          sudo chown mysql:mysql /etc/mysql/certs/ca-cert.pem /etc/mysql/certs/server-cert.pem /etc/mysql/certs/server-key.pem
+          sudo chmod 644 /etc/mysql/certs/ca-cert.pem /etc/mysql/certs/server-cert.pem
+          sudo chmod 600 /etc/mysql/certs/server-key.pem
 
       # 5) Sobe o MariaDB (não usamos o input my_cnf, pois ele não é suportado)
       - name: Setup MariaDB
@@ -72,6 +75,7 @@ jobs:
       - name: Configure MariaDB for SSL
         run: |
           sudo cp my.cnf /etc/mysql/mariadb.conf.d/ssl.cnf
+          sudo chown mysql:mysql /etc/mysql/mariadb.conf.d/ssl.cnf
           sudo systemctl restart mariadb
 
       # 7) Verifica se o MariaDB está com SSL habilitado
