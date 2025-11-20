@@ -256,6 +256,33 @@ void main() {
     await connection.execute("DROP TABLE IF EXISTS binary_test");
   });
 
+  test('Prepared statements: DateTime milliseconds encoded correctly',
+      () async {
+    await connection.execute("DROP TABLE IF EXISTS datetime_millis_test");
+    await connection.execute(
+        "CREATE TABLE datetime_millis_test (id INT AUTO_INCREMENT PRIMARY KEY, ts DATETIME(6))");
+
+    final stmt = await connection
+        .prepare("INSERT INTO datetime_millis_test (ts) VALUES (?)");
+    final sample = DateTime.utc(2024, 5, 1, 12, 30, 45, 123);
+    await stmt.execute([sample]);
+    await stmt.deallocate();
+
+    final row = (await connection
+            .execute("SELECT ts FROM datetime_millis_test WHERE id = 1"))
+        .rows
+        .first;
+
+    final tsText = row.colByName("ts");
+    expect(tsText, contains('12:30:45.123000'));
+
+    final tsTyped = row.typedColByName<DateTime>("ts");
+    expect(tsTyped, isNotNull);
+    expect(tsTyped!.millisecond, equals(123));
+
+    await connection.execute("DROP TABLE IF EXISTS datetime_millis_test");
+  });
+
   test('Execute: parâmetros posicionais com blobs sem prepare explícito',
       () async {
     await connection.execute("DROP TABLE IF EXISTS blob_auto_exec");
