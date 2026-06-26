@@ -1,3 +1,11 @@
+## 1.3.0
+
+- feat: added compatibility with MySQL Community Server 9 and 9.7, including `caching_sha2_password` full authentication with TLS, pinned RSA public keys, or optional server public key retrieval
+- feat: binary protocol now supports MySQL JSON columns (`column type 245`), decoding them as UTF-8 JSON strings instead of failing at the protocol layer
+- feat: integration tests now read `MYSQL_*` environment variables so they can run against any local or CI port/configuration
+- ci: GitHub Actions now runs the test suite against MySQL 9.7 in addition to the existing database coverage
+- refactor: removed external runtime dependencies on `asn1lib`, `pointycastle`, `buffer`, `crypto`, and `tuple` by inlining the required PEM/RSA/OAEP, hashing, tuple, and byte-writer logic
+
 ## 1.2.1
 
 - fix: textual and binary result sets now decode strings with UTF-8 so accented characters appear correctly

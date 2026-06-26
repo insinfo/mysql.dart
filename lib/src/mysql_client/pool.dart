@@ -66,6 +66,8 @@ class MySQLConnectionPool {
   final bool secure;
   final SecurityContext? securityContext;
   final bool Function(X509Certificate certificate)? onBadCertificate;
+  final bool allowPublicKeyRetrieval;
+  final String? serverPublicKey;
   final String collation;
   final int timeoutMs;
   final Duration idleTestThreshold;
@@ -97,6 +99,8 @@ class MySQLConnectionPool {
     this.timeoutMs = 10000,
     this.securityContext,
     this.onBadCertificate,
+    this.allowPublicKeyRetrieval = false,
+    this.serverPublicKey,
     this.idleTestThreshold = const Duration(minutes: 1),
     this.maxConnectionAge = const Duration(hours: 12),
     this.maxSessionUse = const Duration(hours: 8),
@@ -236,6 +240,8 @@ class MySQLConnectionPool {
         collation: collation,
         securityContext: securityContext,
         onBadCertificate: onBadCertificate,
+        allowPublicKeyRetrieval: allowPublicKeyRetrieval,
+        serverPublicKey: serverPublicKey,
       );
 
       await conn.connect(timeoutMs: timeoutMs);

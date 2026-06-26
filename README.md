@@ -55,6 +55,8 @@ final pool = MySQLConnectionPool(
     delay: Duration(milliseconds: 100),
     retryIf: (error) => error is SocketException,
   ),
+  allowPublicKeyRetrieval: true, // optional: for caching_sha2_password without TLS
+  // serverPublicKey: '''-----BEGIN PUBLIC KEY-----...''', // safer than retrieval on insecure links
 );
 ```
 
@@ -69,6 +71,9 @@ final conn = await MySQLConnection.createConnection(
   userName: "your_user",
   password: "your_password",
   databaseName: "your_database_name", // optional
+  // secure: false,
+  // allowPublicKeyRetrieval: true,
+  // serverPublicKey: '''-----BEGIN PUBLIC KEY-----...''',
 );
 
 // actually connect to database
@@ -77,6 +82,12 @@ await conn.connect();
 
 **Warning**
 By default connection is secure. If you don't want to use SSL (TLS) connection, pass *secure: false*
+
+For MySQL 8.4+ / 9.x with `caching_sha2_password`, non-TLS connections usually need one of:
+- `serverPublicKey`: pin the server RSA public key and encrypt the password safely.
+- `allowPublicKeyRetrieval: true`: request the RSA public key from the server during auth.
+
+`allowPublicKeyRetrieval` is a compatibility option. If security matters and you are not using TLS, prefer `serverPublicKey` pinning.
 
 #### Query database
 
@@ -232,4 +243,3 @@ As a general rule, if cause of exception is MySQL server error packet, connectio
 
 It's up to developer to check connection state after catching exception.
 Inside your catch block, you can check connection status using **conn.connected** getter and decide what to do next.
-

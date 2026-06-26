@@ -1,9 +1,9 @@
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart' show ByteDataWriter;
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
-import 'package:tuple/tuple.dart' show Tuple2;
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
+import 'package:mysql_dart/src/utils/hash.dart';
+import 'package:mysql_dart/src/utils/tuple2.dart';
 
 //
 // Constantes de flags de capabilities do protocolo MySQL
@@ -357,12 +357,12 @@ class MySQLPacket {
 
 /// Calcula o hash SHA1 dos dados [data].
 List<int> sha1(List<int> data) {
-  return crypto.sha1.convert(data).bytes;
+  return sha1Digest(data);
 }
 
 /// Calcula o hash SHA256 dos dados [data].
 List<int> sha256(List<int> data) {
-  return crypto.sha256.convert(data).bytes;
+  return sha256Digest(data);
 }
 
 /// Realiza a operação XOR entre dois arrays de bytes [aList] e [bList].

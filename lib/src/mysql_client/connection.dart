@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/exception.dart';
+import 'caching_sha2_auth.dart';
 
 enum _MySQLConnectionState {
   fresh,
@@ -48,6 +49,10 @@ class MySQLConnection {
 
   SecurityContext? _securityContext;
   bool Function(X509Certificate certificate)? _onBadCertificate;
+  final bool _allowPublicKeyRetrieval;
+  final String? _serverPublicKey;
+  Uint8List? _authSeed;
+  bool _awaitingServerPublicKey = false;
 
   MySQLConnection._({
     required Socket socket,
@@ -56,12 +61,16 @@ class MySQLConnection {
     required String collation,
     bool secure = true,
     String? databaseName,
+    bool allowPublicKeyRetrieval = false,
+    String? serverPublicKey,
   })  : _socket = socket,
         _username = username,
         _password = password,
         _databaseName = databaseName,
         _secure = secure,
-        _collation = collation;
+        _collation = collation,
+        _allowPublicKeyRetrieval = allowPublicKeyRetrieval,
+        _serverPublicKey = serverPublicKey;
 
   /// Creates connection with provided options.
   ///
@@ -91,6 +100,8 @@ class MySQLConnection {
     String collation = 'utf8mb4_general_ci',
     SecurityContext? securityContext,
     bool Function(X509Certificate certificate)? onBadCertificate,
+    bool allowPublicKeyRetrieval = false,
+    String? serverPublicKey,
   }) async {
     // Logger.level = loggingLevel;
     // logger.d("Establishing socket connection");
@@ -108,6 +119,8 @@ class MySQLConnection {
       databaseName: databaseName,
       secure: secure,
       collation: collation,
+      allowPublicKeyRetrieval: allowPublicKeyRetrieval,
+      serverPublicKey: serverPublicKey,
     );
 
     // Armazena os parâmetros de SSL no cliente (adicione esses campos na classe)
@@ -185,6 +198,108 @@ class MySQLConnection {
     _onCloseCallbacks.clear();
   }
 
+  bool get _isTransportSecure {
+    return _secure || _socket.address.type == InternetAddressType.unix;
+  }
+
+  Uint8List _buildCachingSha2Seed(Uint8List part1, Uint8List? part2) {
+    final secondPart = part2 == null ? <int>[] : part2.sublist(0, 12);
+    return Uint8List.fromList([...part1, ...secondPart]);
+  }
+
+  Future<void> _handleCachingSha2AuthMoreData(MySQLPacket packet) async {
+    final payload = packet.payload as MySQLPacketExtraAuthData;
+    final pluginData = payload.pluginData;
+
+    if (_awaitingServerPublicKey) {
+      final publicKeyPem = utf8.decode(pluginData, allowMalformed: true);
+      final encryptedPassword = buildCachingSha2EncryptedPassword(
+        _password,
+        _authSeed!,
+        publicKeyPem,
+      );
+
+      final responsePacket = MySQLPacket(
+        sequenceID: packet.sequenceID + 1,
+        payload: MySQLPacketExtraAuthDataResponse(
+          data: encryptedPassword,
+          appendNullTerminator: false,
+        ),
+        payloadLength: 0,
+      );
+
+      _awaitingServerPublicKey = false;
+      _socket.add(responsePacket.encode());
+      return;
+    }
+
+    if (pluginData.isEmpty) {
+      throw MySQLClientException("Received empty extra auth data payload");
+    }
+
+    final status = pluginData[0];
+
+    if (status == 3) {
+      return;
+    }
+
+    if (status != 4) {
+      throw MySQLClientException("Unsupported extra auth data status: $status");
+    }
+
+    if (_isTransportSecure) {
+      final responsePacket = MySQLPacket(
+        sequenceID: packet.sequenceID + 1,
+        payload: MySQLPacketExtraAuthDataResponse(
+          data: buildCachingSha2CleartextPassword(_password),
+        ),
+        payloadLength: 0,
+      );
+
+      _socket.add(responsePacket.encode());
+      return;
+    }
+
+    if (_serverPublicKey != null) {
+      final encryptedPassword = buildCachingSha2EncryptedPassword(
+        _password,
+        _authSeed!,
+        _serverPublicKey!,
+      );
+
+      final responsePacket = MySQLPacket(
+        sequenceID: packet.sequenceID + 1,
+        payload: MySQLPacketExtraAuthDataResponse(
+          data: encryptedPassword,
+          appendNullTerminator: false,
+        ),
+        payloadLength: 0,
+      );
+
+      _socket.add(responsePacket.encode());
+      return;
+    }
+
+    if (_allowPublicKeyRetrieval) {
+      final responsePacket = MySQLPacket(
+        sequenceID: packet.sequenceID + 1,
+        payload: MySQLPacketExtraAuthDataResponse(
+          data: buildCachingSha2PublicKeyRequest(),
+          appendNullTerminator: false,
+        ),
+        payloadLength: 0,
+      );
+
+      _awaitingServerPublicKey = true;
+      _socket.add(responsePacket.encode());
+      return;
+    }
+
+    throw MySQLClientException(
+      "Auth plugin caching_sha2_password requires TLS, a pinned serverPublicKey, or allowPublicKeyRetrieval: true",
+    );
+  }
+
   Future<void> _processSocketData(Uint8List data) async {
     // logger.d("Processing socket data. Current state is $_state");
     // logger.v(data);
@@ -208,11 +323,28 @@ class MySQLConnection {
             authSwitchPacket.payload as MySQLPacketAuthSwitchRequest;
         // logger.d("Processing AuthSwitchRequestPacket");
         _activeAuthPluginName = payload.authPluginName;
+        _authSeed = payload.authPluginData.length >= 20
+            ? Uint8List.sublistView(payload.authPluginData, 0, 20)
+            : Uint8List.fromList(payload.authPluginData);
 
         switch (payload.authPluginName) {
           case 'mysql_native_password':
             final responsePayload =
                 MySQLPacketAuthSwitchResponse.createWithNativePassword(
+              password: _password,
+              challenge: payload.authPluginData.sublist(0, 20),
+            );
+            final responsePacket = MySQLPacket(
+              sequenceID: authSwitchPacket.sequenceID + 1,
+              payload: responsePayload,
+              payloadLength: 0,
+            );
+
+            _socket.add(responsePacket.encode());
+            return;
+          case 'caching_sha2_password':
+            final responsePayload =
+                MySQLPacketAuthSwitchResponse.createWithCachingSha2Password(
               password: _password,
               challenge: payload.authPluginData.sublist(0, 20),
             );
@@ -249,32 +381,8 @@ class MySQLConnection {
               "Unexpected auth plugin name $_activeAuthPluginName, while receiving MySQLPacketExtraAuthData packet");
         }
 
-        if (_secure == false) {
-          throw MySQLClientException(
-              "Auth plugin caching_sha2_password is supported only with secure connections. Pass secure: true or use another auth method");
-        }
-
-        final payload = packet.payload as MySQLPacketExtraAuthData;
-        final status = payload.pluginData.codeUnitAt(0);
-
-        if (status == 3) {
-          // server has password cache. just ignore
-          return;
-        } else if (status == 4) {
-          // send password to the server
-          final authExtraDataResponse = MySQLPacket(
-            sequenceID: packet.sequenceID + 1,
-            payload: MySQLPacketExtraAuthDataResponse(
-              data: Uint8List.fromList(utf8.encode(_password)),
-            ),
-            payloadLength: 0,
-          );
-
-          _socket.add(authExtraDataResponse.encode());
-          return;
-        } else {
-          throw MySQLClientException("Unsupported extra auth data: $data");
-        }
+        await _handleCachingSha2AuthMoreData(packet);
+        return;
       }
 
       if (packet.isErrorPacket()) {
@@ -356,6 +464,10 @@ class MySQLConnection {
     }
     // logger.d(payload);
     _serverCapabilities = payload.capabilityFlags;
+    _authSeed = _buildCachingSha2Seed(
+      payload.authPluginDataPart1,
+      payload.authPluginDataPart2,
+    );
 
     if (_secure && (_serverCapabilities & mysqlCapFlagClientSsl == 0)) {
       throw MySQLClientException(

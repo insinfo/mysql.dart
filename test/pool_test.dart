@@ -3,6 +3,8 @@ import 'dart:math';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 
+import 'test_config.dart';
+
 /// Cria tabelas de teste com nomes únicos e insere dados iniciais.
 /// Retorna um Map com os nomes das tabelas criadas.
 Future<Map<String, String>> createTemporaryTables(
@@ -51,13 +53,13 @@ void main() {
 
   setUpAll(() async {
     pool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 10,
-      secure: false,
+      secure: mysqlTestSecure,
     );
   });
 
@@ -109,8 +111,7 @@ void main() {
     final tables = await createTemporaryTables(pool);
     try {
       // Cria um prepared statement usando a sintaxe com parâmetros nomeados
-      final stmt =
-          await pool.prepare("UPDATE ${tables['book']} SET price = ?");
+      final stmt = await pool.prepare("UPDATE ${tables['book']} SET price = ?");
       // Executa a atualização definindo o preço para 400
       final result = await stmt.execute([400]);
       expect(result.affectedRows.toInt(), equals(2));
@@ -164,7 +165,8 @@ void main() {
     await pool.execute("DROP TABLE IF EXISTS temp_test_rollback");
     await pool.execute(
         "CREATE TABLE temp_test_rollback (id INT AUTO_INCREMENT PRIMARY KEY, value INT)  ENGINE=InnoDB;");
-    await pool.execute("INSERT INTO temp_test_rollback (value) VALUES (10), (20)");
+    await pool
+        .execute("INSERT INTO temp_test_rollback (value) VALUES (10), (20)");
 
     // Executa uma transação que deve ser revertida
     try {
@@ -175,7 +177,6 @@ void main() {
         );
         throw Exception("Forçando rollback");
       });
-      
     } catch (e) {
       // Exceção esperada; o rollback deve ter ocorrido
     }
@@ -190,13 +191,13 @@ void main() {
   test('Aplica timeZone e callback onOpen', () async {
     bool hookCalled = false;
     final customPool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 1,
-      secure: false,
+      secure: mysqlTestSecure,
       timeZone: '+00:00',
       onConnectionOpen: (conn) async {
         hookCalled = true;
@@ -219,13 +220,13 @@ void main() {
 
   test('Recicla conexões antigas e testa idle', () async {
     final recyclingPool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 1,
-      secure: false,
+      secure: mysqlTestSecure,
       maxConnectionAge: const Duration(milliseconds: 1),
       maxSessionUse: const Duration(milliseconds: 1),
       idleTestThreshold: Duration.zero,
@@ -254,13 +255,13 @@ void main() {
   test('Retry básico reexecuta callback', () async {
     int attempts = 0;
     final retryPool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 1,
-      secure: false,
+      secure: mysqlTestSecure,
       retryOptions: MySQLPoolRetryOptions(
         maxAttempts: 2,
         delay: const Duration(milliseconds: 10),
@@ -287,13 +288,13 @@ void main() {
 
   test('Respeita maxConnections e enfileira tarefas', () async {
     final limitedPool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 2,
-      secure: false,
+      secure: mysqlTestSecure,
     );
 
     int concurrentConnections = 0;
@@ -312,7 +313,8 @@ void main() {
     try {
       await Future.wait(List.generate(5, (_) => runTask()));
       expect(maxObserved, equals(2),
-          reason: 'O pool não deve permitir mais conexões do que maxConnections');
+          reason:
+              'O pool não deve permitir mais conexões do que maxConnections');
       expect(limitedPool.allConnectionsQty, lessThanOrEqualTo(2));
     } finally {
       await limitedPool.close();
@@ -321,13 +323,13 @@ void main() {
 
   test('withConnection libera conexão mesmo quando há erro', () async {
     final tempPool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 1,
-      secure: false,
+      secure: mysqlTestSecure,
     );
 
     try {
@@ -356,13 +358,13 @@ void main() {
 
   test('close encerra todas as conexões e limpa listas internas', () async {
     final closingPool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       maxConnections: 2,
-      secure: false,
+      secure: mysqlTestSecure,
     );
 
     await closingPool.withConnection((conn) async {

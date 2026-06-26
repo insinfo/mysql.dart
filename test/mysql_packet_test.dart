@@ -1,9 +1,9 @@
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart';
-import 'package:hex/hex.dart';
+import 'package:mysql_dart/src/utils/hex.dart';
 import 'package:test/test.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 void main() {
   group("testing variable length int", () {
@@ -577,7 +577,7 @@ void main() {
   group("testing packets parsing", () {
     test("testing initial handshake packet", () {
       final buffer = Uint8List.fromList(
-        HEX.decode(
+        hex.decode(
           '4d0000000a352e372e33352d3338007b000000181e73526349597c00ffff080200ffc1150000000000000000000007317a2531721d587825181d006d7973716c5f6e61746976655f70617373776f726400',
         ),
       );
@@ -593,11 +593,11 @@ void main() {
       expect(payload.connectionID, 123);
       expect(
         payload.authPluginDataPart1,
-        Uint8List.fromList(HEX.decode('181e73526349597c')),
+        Uint8List.fromList(hex.decode('181e73526349597c')),
       );
       expect(
         payload.authPluginDataPart2,
-        Uint8List.fromList(HEX.decode('07317a2531721d587825181d00')),
+        Uint8List.fromList(hex.decode('07317a2531721d587825181d00')),
       );
 
       expect(payload.authPluginName, "mysql_native_password");
@@ -624,7 +624,7 @@ void main() {
     });
 
     test("testing response ok packet", () {
-      final buffer = Uint8List.fromList(HEX.decode('0700000200000002000000'));
+      final buffer = Uint8List.fromList(hex.decode('0700000200000002000000'));
       final packet = MySQLPacket.decodeGenericPacket(buffer);
       expect(packet.payload, isA<MySQLPacketOK>());
       expect(packet.payloadLength, 7);

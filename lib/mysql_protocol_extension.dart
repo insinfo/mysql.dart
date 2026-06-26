@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart' show ByteDataWriter;
 import 'package:mysql_dart/exception.dart';
-import 'package:tuple/tuple.dart' show Tuple2;
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
+import 'package:mysql_dart/src/utils/tuple2.dart';
 
 /// Extensão para [Uint8List] contendo métodos auxiliares para ler strings e
 /// dados length-encoded conforme o protocolo MySQL.
@@ -110,29 +110,32 @@ extension MySQLByteDataExtension on ByteData {
 
     if (firstByte == 0xfc) {
       // Próximos 2 bytes.
-      final radix = getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
+      final radix =
+          getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
       return Tuple2(BigInt.parse(radix, radix: 16), 3);
     }
 
     if (firstByte == 0xfd) {
       // Próximos 3 bytes.
-      final radix = getUint8(startOffset + 3).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
+      final radix =
+          getUint8(startOffset + 3).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
       return Tuple2(BigInt.parse(radix, radix: 16), 4);
     }
 
     if (firstByte == 0xfe) {
       // Próximos 8 bytes.
-      final radix = getUint8(startOffset + 8).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 7).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 6).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 5).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 4).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 3).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0')
-          + getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
+      final radix =
+          getUint8(startOffset + 8).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 7).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 6).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 5).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 4).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 3).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0') +
+              getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
       return Tuple2(BigInt.parse(radix, radix: 16), 9);
     }
 

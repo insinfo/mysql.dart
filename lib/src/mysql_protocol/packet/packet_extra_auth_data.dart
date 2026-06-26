@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 import 'package:mysql_dart/mysql_protocol.dart';
-import 'package:mysql_dart/mysql_protocol_extension.dart';
 
 /// Representa o pacote de dados extras de autenticação enviado pelo servidor.
 ///
@@ -10,13 +9,13 @@ import 'package:mysql_dart/mysql_protocol_extension.dart';
 ///
 /// O pacote possui a seguinte estrutura:
 /// 1. Um byte de header.
-/// 2. Dados do plugin (pluginData) no restante do buffer, lidos como uma string UTF-8.
+/// 2. Dados do plugin (pluginData) no restante do buffer.
 class MySQLPacketExtraAuthData extends MySQLPacketPayload {
   /// Header do pacote (1 byte).
   final int header;
 
   /// Dados do plugin de autenticação enviados pelo servidor.
-  final String pluginData;
+  final Uint8List pluginData;
 
   /// Construtor para criar uma instância de [MySQLPacketExtraAuthData].
   MySQLPacketExtraAuthData({
@@ -38,8 +37,7 @@ class MySQLPacketExtraAuthData extends MySQLPacketPayload {
     final header = byteData.getUint8(offset);
     offset += 1;
 
-    // O restante do buffer é convertido para string UTF-8
-    String pluginData = buffer.getUtf8StringEOF(offset);
+    final pluginData = Uint8List.sublistView(buffer, offset);
 
     return MySQLPacketExtraAuthData(
       header: header,
@@ -49,6 +47,7 @@ class MySQLPacketExtraAuthData extends MySQLPacketPayload {
 
   @override
   Uint8List encode() {
-    throw UnimplementedError("Encode não implementado para MySQLPacketExtraAuthData");
+    throw UnimplementedError(
+        "Encode não implementado para MySQLPacketExtraAuthData");
   }
 }

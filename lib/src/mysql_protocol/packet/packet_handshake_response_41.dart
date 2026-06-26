@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 /// Flags de capabilities suportadas pelo cliente.
 /// Essas flags são combinadas e definem as funcionalidades suportadas na conexão.
@@ -60,8 +60,10 @@ class MySQLPacketHandshakeResponse41 extends MySQLPacketPayload {
     required MySQLPacketInitialHandshake initialHandshakePayload,
   }) {
     // Concatena a parte 1 do desafio com os 12 primeiros bytes da parte 2
-    final challenge = initialHandshakePayload.authPluginDataPart1 +
-        initialHandshakePayload.authPluginDataPart2!.sublist(0, 12);
+    final challenge = Uint8List.fromList([
+      ...initialHandshakePayload.authPluginDataPart1,
+      ...initialHandshakePayload.authPluginDataPart2!.sublist(0, 12),
+    ]);
 
     // Verifica se o desafio possui 20 bytes, conforme especificado.
     assert(challenge.length == 20);
@@ -73,7 +75,7 @@ class MySQLPacketHandshakeResponse41 extends MySQLPacketPayload {
     // authResponse = xor(sha1(password), sha1(challenge + sha1(sha1(password))))
     final authData = xor(
       sha1(passwordBytes),
-      sha1(challenge + sha1(sha1(passwordBytes))),
+      sha1([...challenge, ...sha1(sha1(passwordBytes))]),
     );
 
     return MySQLPacketHandshakeResponse41(
@@ -101,8 +103,10 @@ class MySQLPacketHandshakeResponse41 extends MySQLPacketPayload {
     required MySQLPacketInitialHandshake initialHandshakePayload,
   }) {
     // Concatena a parte 1 do desafio com os 12 primeiros bytes da parte 2
-    final challenge = initialHandshakePayload.authPluginDataPart1 +
-        initialHandshakePayload.authPluginDataPart2!.sublist(0, 12);
+    final challenge = Uint8List.fromList([
+      ...initialHandshakePayload.authPluginDataPart1,
+      ...initialHandshakePayload.authPluginDataPart2!.sublist(0, 12),
+    ]);
 
     // Verifica se o desafio possui 20 bytes
     assert(challenge.length == 20);
@@ -114,7 +118,7 @@ class MySQLPacketHandshakeResponse41 extends MySQLPacketPayload {
     // authResponse = xor(sha256(password), sha256(sha256(sha256(password)) + challenge))
     final authData = xor(
       sha256(passwordBytes),
-      sha256(sha256(sha256(passwordBytes)) + challenge),
+      sha256([...sha256(sha256(passwordBytes)), ...challenge]),
     );
 
     return MySQLPacketHandshakeResponse41(

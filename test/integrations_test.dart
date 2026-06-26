@@ -2,18 +2,20 @@ import 'dart:typed_data';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 
+import 'test_config.dart';
+
 void main() {
   MySQLConnection? conn;
 
   setUpAll(() async {
     // Cria a conexão com o banco
     conn = await MySQLConnection.createConnection(
-      host: 'localhost', // Ajuste conforme seu ambiente
-      port: 3306,
-      userName: 'dart', // Ajuste conforme seu usuário
-      password: 'dart', // Ajuste conforme sua senha
-      databaseName: 'banco_teste', // Ajuste conforme seu banco
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser, // Ajuste conforme seu usuário
+      password: mysqlTestPassword, // Ajuste conforme sua senha
+      databaseName: mysqlTestDatabase, // Ajuste conforme seu banco
+      secure: mysqlTestSecure,
     );
     await conn!.connect();
 
@@ -139,8 +141,9 @@ void main() {
     expect(result.affectedRows.toInt(), equals(1));
     await stmt.deallocate();
   });
-  
-  test('Strings com acentuação são preservadas em ambos os protocolos', () async {
+
+  test('Strings com acentuação são preservadas em ambos os protocolos',
+      () async {
     const accented = 'Notícias – çãõáéíú';
 
     // Insere via prepared statement (protocolo binário na ida)
@@ -158,8 +161,8 @@ void main() {
     expect(textualResult.rows.first.colAt(0), equals(accented));
 
     // Consulta preparada (protocolo binário) também deve preservar os acentos
-    final binaryStmt = await conn!
-        .prepare('SELECT string_column FROM my_table WHERE id = ?');
+    final binaryStmt =
+        await conn!.prepare('SELECT string_column FROM my_table WHERE id = ?');
     final binaryResult = await binaryStmt.execute([insertedId]);
     expect(binaryResult.numOfRows, greaterThan(0));
     expect(binaryResult.rows.first.colAt(0), equals(accented));
@@ -247,7 +250,7 @@ void main() {
     try {
       await stmtDup.execute([1, "Duplicado"]);
       fail("Deveria lançar erro de chave duplicada");
-    } catch (e) {      
+    } catch (e) {
       // Verifica se a mensagem de erro contém "Duplicate entry"
       expect(e.toString(), contains("Duplicate entry"),
           reason:

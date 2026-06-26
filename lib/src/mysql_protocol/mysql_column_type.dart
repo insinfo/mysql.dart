@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:tuple/tuple.dart';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+import 'package:mysql_dart/src/utils/tuple2.dart';
 
 /// Constantes que representam os tipos de coluna do MySQL conforme o protocolo.
 const mysqlColumnTypeDecimal = 0x00;
@@ -439,6 +439,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
     case mysqlColumnTypeVarChar:
     case mysqlColumnTypeEnum:
     case mysqlColumnTypeSet:
+    case mysqlColumnTypeJson:
       {
         // Dados textuais length-encoded
         final result = buffer.getUtf8LengthEncodedString(startOffset);

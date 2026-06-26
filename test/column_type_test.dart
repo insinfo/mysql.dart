@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:test/test.dart';
 
@@ -541,6 +544,30 @@ void main() {
         () => sqlType.convertStringValueToProvidedType<bool>('process'),
         throwsException,
       );
+    },
+  );
+
+  test(
+    "testing binary JSON type",
+    () {
+      const jsonValue = '{"name":"Alice","age":30}';
+      final jsonBytes = utf8.encode(jsonValue);
+      final buffer = Uint8List.fromList([jsonBytes.length, ...jsonBytes]);
+      final byteData = ByteData.sublistView(buffer);
+
+      final result = parseBinaryColumnData(
+        mysqlColumnTypeJson,
+        byteData,
+        buffer,
+        0,
+      );
+
+      expect(result.item1, jsonValue);
+      expect(result.item2, buffer.length);
+      expect(jsonDecode(result.item1 as String), {
+        'name': 'Alice',
+        'age': 30,
+      });
     },
   );
 }

@@ -1,6 +1,6 @@
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 /// Flags de capabilities suportadas para a conexão SSL.
 /// Essas flags indicam quais funcionalidades o cliente suporta e são combinadas

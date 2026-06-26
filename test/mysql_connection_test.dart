@@ -1,4 +1,6 @@
 import 'package:test/test.dart';
+
+import 'test_config.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 
 void main() {
@@ -7,12 +9,12 @@ void main() {
   setUpAll(() async {
     // Cria e conecta a uma instância de MySQLConnection
     connection = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
     );
     await connection.connect();
   });
@@ -114,12 +116,12 @@ void main() {
     // Cria uma nova conexão para testar o callback onClose
     var closedCalled = false;
     final conn2 = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
     );
     conn2.onClose(() {
       closedCalled = true;

@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 /// Representa o pacote de resposta para o Auth Switch Request.
 ///
@@ -42,8 +42,31 @@ class MySQLPacketAuthSwitchResponse extends MySQLPacketPayload {
     final passwordBytes = utf8.encode(password);
 
     // Calcula a resposta de autenticação utilizando a função xor e os hashes SHA1.
-    final authData =
-        xor(sha1(passwordBytes), sha1(challenge + sha1(sha1(passwordBytes))));
+    final authData = xor(
+      sha1(passwordBytes),
+      sha1([...challenge, ...sha1(sha1(passwordBytes))]),
+    );
+
+    return MySQLPacketAuthSwitchResponse(
+      authData: authData,
+    );
+  }
+
+  /// Cria uma resposta de autenticação para o plugin caching_sha2_password.
+  factory MySQLPacketAuthSwitchResponse.createWithCachingSha2Password({
+    required String password,
+    required Uint8List challenge,
+  }) {
+    assert(challenge.length == 20);
+    if (password == '') {
+      return MySQLPacketAuthSwitchResponse(authData: Uint8List(0));
+    }
+
+    final passwordBytes = utf8.encode(password);
+    final authData = xor(
+      sha256(passwordBytes),
+      sha256([...sha256(sha256(passwordBytes)), ...challenge]),
+    );
 
     return MySQLPacketAuthSwitchResponse(
       authData: authData,

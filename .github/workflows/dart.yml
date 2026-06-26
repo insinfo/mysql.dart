@@ -104,4 +104,55 @@ jobs:
 
       # 11) Roda os testes
       - name: Run Dart Tests
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: dart
+          MYSQL_PASSWORD: dart
+          MYSQL_DATABASE: banco_teste
+          MYSQL_SECURE: "true"
+        run: dart run test --concurrency 1 --chain-stack-traces --platform vm
+
+  mysql-97:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        sdk: [3.6.0]
+
+    services:
+      mysql:
+        image: mysql:9.7
+        env:
+          MYSQL_ROOT_PASSWORD: dart
+          MYSQL_DATABASE: banco_teste
+          MYSQL_USER: dart
+          MYSQL_PASSWORD: dart
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -pdart --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2
+
+      - name: Setup Dart SDK
+        uses: dart-lang/setup-dart@v1.3
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Install Dart Dependencies
+        run: dart pub get
+
+      - name: Run Dart Tests on MySQL 9.7
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3307
+          MYSQL_USER: dart
+          MYSQL_PASSWORD: dart
+          MYSQL_DATABASE: banco_teste
+          MYSQL_SECURE: "true"
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm

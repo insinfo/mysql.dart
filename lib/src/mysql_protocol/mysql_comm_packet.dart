@@ -1,10 +1,10 @@
 //mysql_comm_packet.dart
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart' show ByteDataWriter;
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 /// Representa o comando INIT DB no protocolo MySQL.
 ///
@@ -269,9 +269,8 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       case mysqlColumnTypeNewDecimal:
         {
           // Se o parâmetro for Uint8List, manda-o como binário; caso contrário, converte para string UTF-8
-          final encodedData = (param is Uint8List)
-              ? param
-              : utf8.encode(param.toString());
+          final encodedData =
+              (param is Uint8List) ? param : utf8.encode(param.toString());
 
           // Primeiro escreve o tamanho (length-encoded)
           buffer.writeVariableEncInt(encodedData.length);

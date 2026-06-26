@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:mysql_dart/exception.dart';
 import 'package:test/test.dart';
+
+import 'test_config.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 
 //openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/ca-key.pem -out certs/ca-cert.pem -days 365 -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=MyTestCA"
@@ -20,12 +22,12 @@ void main() {
   setUpAll(() async {
     // Cria e conecta uma instância de MySQLConnection para a maioria dos testes
     connection = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
     );
     await connection.connect();
   });
@@ -58,12 +60,12 @@ void main() {
 
   test('Connection pool: Query via pool', () async {
     final pool = MySQLConnectionPool(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
       maxConnections: 5,
     );
     final result = await pool.execute("SELECT 1 AS test");
@@ -156,12 +158,12 @@ void main() {
 
   test('SSL connection: Conecta com SSL habilitado', () async {
     final sslConn = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: true,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
     );
     await sslConn.connect();
     expect(sslConn.connected, isTrue);
@@ -178,12 +180,12 @@ void main() {
     // context.setTrustedCertificates('path/to/ca_cert.pem');
     final SecurityContext context = SecurityContext(withTrustedRoots: true);
     final sslConn = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: true,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
       securityContext: context,
       onBadCertificate: (certificate) => true,
     );
@@ -195,12 +197,28 @@ void main() {
   test('Auth: caching_sha2_password', () async {
     // Presume-se que o usuário "dart" esteja configurado para usar caching_sha2_password (padrão no MySQL 8)
     final csConn = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
+    );
+    await csConn.connect();
+    expect(csConn.connected, isTrue);
+    await csConn.close();
+  });
+
+  test('Auth: caching_sha2_password sem TLS com allowPublicKeyRetrieval',
+      () async {
+    final csConn = await MySQLConnection.createConnection(
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
       secure: false,
+      allowPublicKeyRetrieval: true,
     );
     await csConn.connect();
     expect(csConn.connected, isTrue);
@@ -301,8 +319,8 @@ void main() {
       {"payload": namedBlob},
     );
 
-    final result = await connection
-        .execute("SELECT data FROM blob_auto_exec ORDER BY id");
+    final result =
+        await connection.execute("SELECT data FROM blob_auto_exec ORDER BY id");
     final rows = result.rows.toList();
     expect(rows.length, equals(2));
     expect(rows[0].colByName("data"), equals(positionalBlob));
@@ -367,12 +385,12 @@ void main() {
   test('onClose: Callback é invocado ao fechar a conexão', () async {
     var closedCalled = false;
     final conn2 = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
     );
     conn2.onClose(() {
       closedCalled = true;
@@ -398,28 +416,18 @@ void main() {
         reason: "Deveria lançar erro de servidor");
   });
 
-  test('Tipos YEAR(2) e YEAR(4)', () async {
-    // Dependendo da configuração do MySQL, YEAR(2) pode estar descontinuado a partir do 5.7.
+  test('Tipo YEAR', () async {
     await connection.execute("DROP TABLE IF EXISTS year_test");
     await connection.execute('''
     CREATE TABLE year_test (
-      y2 YEAR(2),
-      y4 YEAR(4)
+      y YEAR
     )
   ''');
 
-    // Insere valores "ano 99" e "ano 2025"
-    // Observação: YEAR(2) costuma armazenar 99 como 1999, mas depende da versão do MySQL.
-    await connection
-        .execute("INSERT INTO year_test (y2, y4) VALUES (99, 2025)");
-    final res = await connection.execute("SELECT y2, y4 FROM year_test");
+    await connection.execute("INSERT INTO year_test (y) VALUES (2025)");
+    final res = await connection.execute("SELECT y FROM year_test");
     final row = res.rows.first;
-    // Normalmente, colByName("y2") = "1999" ou algo assim, mas pode variar.
-    //print("Valor de y2 = ${row.colByName('y2')}, y4 = ${row.colByName('y4')}");
-    // Adapte as expectations conforme seu MySQL retorna.
-    expect(row.colByName('y2'), anyOf(['1999', '99']),
-        reason: 'Depende da versão');
-    expect(row.colByName('y4'), equals('2025'));
+    expect(row.colByName('y'), equals('2025'));
     await connection.execute("DROP TABLE IF EXISTS year_test");
   });
 
@@ -502,12 +510,12 @@ void main() {
     // ou matar o servidor MySQL (inviável no teste).
     // Exemplo artificial:
     final conn2 = await MySQLConnection.createConnection(
-      host: 'localhost',
-      port: 3306,
-      userName: 'dart',
-      password: 'dart',
-      databaseName: 'banco_teste',
-      secure: false,
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      secure: mysqlTestSecure,
     );
     await conn2.connect();
     expect(conn2.connected, isTrue);
@@ -543,7 +551,7 @@ void main() {
     await connection.execute("DROP TABLE IF EXISTS table_outrodb");
     await connection.execute("CREATE TABLE table_outrodb (id INT)");
     // Retorna para o banco original
-    await connection.execute("USE banco_teste");
+    await connection.execute("USE $mysqlTestDatabase");
   });
 
   test('Coluna JSON', () async {
@@ -569,10 +577,8 @@ void main() {
     }
 
     print("Valor JSON: $jsonStr");
-    // Normalmente o MySQL retorna o JSON como string
-    expect(jsonStr, contains('"name":"Alice"'));
-    // Se quiser parsear para map:
     final decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
+    expect(decoded['name'], equals('Alice'));
     expect(decoded['age'], equals(30));
     await connection.execute("DROP TABLE IF EXISTS json_test");
   });
@@ -602,12 +608,11 @@ void main() {
   // test('Timeout: Query muito lenta deve estourar tempo limite', () async {
   //   // Supondo que o seu driver possua connect(timeoutMs: 2000) ou algo parecido:
   //   final connTimeout = await MySQLConnection.createConnection(
-  //     host: 'localhost',
-  //     port: 3306,
-  //     userName: 'dart',
-  //     password: 'dart',
-  //     databaseName: 'banco_teste',
-  //     secure: false,
+  //     host: mysqlTestHost,
+  //     userName: mysqlTestUser,
+  //     password: mysqlTestPassword,
+  //     databaseName: mysqlTestDatabase,
+  //     secure: mysqlTestSecure,
   //   );
 
   //   // Força um timeout pequeno.

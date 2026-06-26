@@ -1,6 +1,6 @@
 import 'dart:typed_data';
-import 'package:buffer/buffer.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
+import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 /// Representa o pacote de resposta com dados extras de autenticação.
 ///
@@ -11,10 +11,12 @@ import 'package:mysql_dart/mysql_protocol.dart';
 class MySQLPacketExtraAuthDataResponse extends MySQLPacketPayload {
   /// Dados extras de autenticação a serem enviados para o servidor.
   final Uint8List data;
+  final bool appendNullTerminator;
 
   /// Construtor para criar uma instância de [MySQLPacketExtraAuthDataResponse].
   MySQLPacketExtraAuthDataResponse({
     required this.data,
+    this.appendNullTerminator = true,
   });
 
   /// Codifica o pacote em um [Uint8List] para envio ao servidor.
@@ -26,7 +28,9 @@ class MySQLPacketExtraAuthDataResponse extends MySQLPacketPayload {
   Uint8List encode() {
     final buffer = ByteDataWriter(endian: Endian.little);
     buffer.write(data);
-    buffer.writeUint8(0);
+    if (appendNullTerminator) {
+      buffer.writeUint8(0);
+    }
     return buffer.toBytes();
   }
 }
