@@ -12,19 +12,97 @@ I’m on @buymeacoffee. If you like my work, you can buy me a ☕ and share your
 
 See [example](example/) directory for examples and usage
 
-Tested with:
- * MySQL Percona Server 5.7 and 8 versions
- * MySQL Community Server 9 and 9.7
- * MariaDB 10 version
- * MariaDB 11.7.2 version
+Tested in CI:
+ * MariaDB 10.11
+ * MariaDB 11.8
+ * MySQL Community Server 9
+ * MySQL Community Server 9.7
 
-### What's New in 1.3.0
+Also verified outside CI:
+ * MySQL Percona Server 5.7 and 8
+ * MariaDB 10.x
+ * MariaDB 11.7.2
+
+### What's New in 2.0.0
 
 - Added compatibility with MySQL Community Server 9 and 9.7, including full `caching_sha2_password` authentication with TLS, pinned RSA public keys, or optional server public key retrieval.
 - Added binary protocol support for MySQL JSON columns (`column type 245`), decoding them as UTF-8 JSON strings instead of failing at the protocol layer.
 - Integration tests now read `MYSQL_*` environment variables, so the suite can run against arbitrary local or CI host/port/database configurations.
-- GitHub Actions now runs the test suite against MySQL 9.7 in addition to the existing database coverage.
+- GitHub Actions now runs the test suite against MariaDB 10.11, MariaDB 11.8, MySQL 9, and MySQL 9.7.
 - Removed external runtime dependencies on `asn1lib`, `pointycastle`, `buffer`, `crypto`, and `tuple` by inlining the required PEM/RSA/OAEP, hashing, tuple, and byte-writer logic.
+- Removed the unsafe pooled APIs `MySQLConnectionPool.prepare()` and `MySQLConnectionPool.execute(..., iterable: true)`. Use `withPrepared(...)` and `withConnection(...)` instead.
+- Result-set streaming now propagates backpressure to the socket subscription, and benchmark tooling now measures TLS/non-TLS connect latency, percentile statistics, result-set first-row latency, and streaming vs materialized throughput.
+
+### Breaking Changes in 2.0.0
+
+- `MySQLConnectionPool.prepare()` no longer exists.
+- `MySQLConnectionPool.execute(..., iterable: true)` is no longer supported.
+
+Why:
+
+- A prepared statement belongs to one physical connection. The old `pool.prepare()` API let a statement escape after the pool had already returned the owning connection to the idle queue.
+- An iterable result set keeps its connection busy until EOF. The old pooled iterable path could release that connection before the stream had finished.
+
+Those old APIs could lead to concurrency bugs such as:
+
+- `connection is busy` failures when unrelated work reused the same connection;
+- `COM_STMT_CLOSE` or `COM_STMT_EXECUTE` arriving on a connection already borrowed by another operation;
+- result streams consuming packets while the pool had already handed the same connection to a different query;
+- protocol desynchronization when prepared-statement lifecycle and connection lifecycle diverged.
+
+Use:
+
+```dart
+await pool.withPrepared(
+  'UPDATE book SET price = ? WHERE id = ?',
+  (stmt) => stmt.execute([99, 1]),
+);
+
+await pool.withConnection((conn) async {
+  final result = await conn.execute('SELECT * FROM book', null, true);
+  await for (final row in result.rowsStream) {
+    print(row.assoc());
+  }
+});
+```
+
+### Local Driver Benchmark
+
+This benchmark compares the current local `mysql_dart` tree (`2.0.0`) against `mysql_dart` `1.2.1`, PHP PDO, PHP mysqli, [`friends-of-reactphp/mysql`](https://github.com/friends-of-reactphp/mysql) via its Composer package `react/mysql`, and [`amphp/mysql`](https://github.com/amphp/mysql).
+
+Environment:
+
+- Server: `10.11.6-MariaDB-log` (`mariadb.org binary distribution`)
+- Host/port: `127.0.0.1:3306`
+- Transport: plain TCP (`MYSQL_SECURE=false`)
+- PHP: `8.3.11` NTS
+- Dart SDK: `3.6.2`
+- Workload: `2000` scalar iterations, `20` connect iterations, result sets of `10`, `1000`, and `10000` rows with positional row access
+- Command: `powershell -ExecutionPolicy Bypass -File tool/run_driver_comparison.ps1`
+
+Scalar results:
+
+| Metric | mysql_dart 2.0.0 | mysql_dart 1.2.1 | PHP PDO | PHP mysqli | ReactPHP mysql | AMPHP mysql |
+|---|---:|---:|---:|---:|---:|---:|
+| Connect avg ms | 1.131 | 130.411 | 2.711 | 13.266 | 156.278 | 0.618 |
+| Text ops/s | 6432 | 6562 | 7333 | 12287 | 7572 | 5092 |
+| Auto prepared ops/s | 7113 | 7115 | - | 7207 | 6651 | 2594 |
+| Prepared ops/s | 9702 | 10219 | 14741 | 15535 | - | 5065 |
+
+Result-set throughput:
+
+| Result set | mysql_dart 2.0.0 | mysql_dart 1.2.1 | PHP PDO | PHP mysqli | ReactPHP mysql | AMPHP mysql |
+|---|---:|---:|---:|---:|---:|---:|
+| 10 rows/s | 65,746 | 56,117 | 55,106 | 101,693 | 44,625 | 23,110 |
+| 1,000 rows/s | 499,413 | 278,505 | 507,616 | 729,219 | 136,012 | 64,428 |
+| 10,000 rows/s | 818,274 | 207,385 | 599,171 | 746,236 | 146,778 | 67,594 |
+
+Reading the numbers:
+
+- `mysql_dart` `2.0.0` removes the artificial connect latency present in `1.2.1`.
+- `mysqli` still leads scalar prepared statements because it uses the native PHP/MySQL C stack.
+- `mysql_dart` `2.0.0` is materially faster than `1.2.1` on large result sets after the parser and row materialization changes.
+- ReactPHP's package does not expose a separate public prepared-statement object in the benchmark path, so only its parameterized query path is reported.
 
 ### Roadmap
 
@@ -126,6 +204,22 @@ await conn.execute(
 ```
 
 If you need to stream results row-by-row instead of buffering the whole result, pass `iterable: true` to `execute()` (or `prepare()`), and consume `rowsStream`.
+For iterable result sets, the driver now propagates `pause` / `resume` from the consumer stream down to the socket subscription, so a slow consumer can apply real backpressure instead of only buffering rows in memory.
+
+The automatic prepared-statement cache is per connection and defaults to 32 statements. If your workload has a larger hot set of parameterized SQL strings, tune it when creating a connection or pool:
+
+```dart
+final conn = await MySQLConnection.createConnection(
+  host: 'localhost',
+  port: 3306,
+  userName: 'dart',
+  password: 'dart',
+  databaseName: 'app',
+  autoPreparedStatementCacheCapacity: 128,
+);
+```
+
+See [doc/AUTO_PREPARED_CACHE_BENCHMARK.md](doc/AUTO_PREPARED_CACHE_BENCHMARK.md) for the hot-set vs thrash-set benchmark and sizing guidance.
 
 #### Print result
 ```dart
@@ -173,6 +267,15 @@ await stmt.execute([null, 'Some book 2', 10, '2022-01-01']);
 await stmt.deallocate();
 ```
 
+For connection pools, do not keep a prepared statement outside the lifetime of the borrowed connection. Use `pool.withPrepared(...)`:
+
+```dart
+await pool.withPrepared(
+  'UPDATE book SET price = ? WHERE id = ?',
+  (stmt) => stmt.execute([99, 1]),
+);
+```
+
 ### Transactions
 
 To execute queries in transaction, you can use *transactional()* method on *connection* or *pool* object
@@ -195,6 +298,8 @@ In this case rows will be ready as soon as they are delivered from the network.
 This allows you to process large amount of rows, one by one, in Stream fashion.
 
 When using iterable result set, you need to use **result.rowsStream.listen** instead of **result.rows** to get access to rows.
+
+`MySQLConnectionPool.execute(..., iterable: true)` is intentionally unsupported. A streamed result keeps its connection busy until EOF, so pooled streaming must be done through `pool.withConnection(...)` and fully consumed before the callback returns.
 
 Example:
 

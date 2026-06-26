@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 
 class MySQLPoolRetryOptions {
@@ -77,9 +79,11 @@ class MySQLConnectionPool {
   final String? timeZone;
   final FutureOr<void> Function(MySQLConnection conn)? onConnectionOpen;
   final MySQLPoolRetryOptions retryOptions;
+  final int autoPreparedStatementCacheCapacity;
 
   final List<_PooledConnection> _activeConnections = [];
   final List<_PooledConnection> _idleConnections = [];
+  final Queue<Completer<_PooledConnection>> _waiters = Queue();
   int _pendingConnections = 0;
 
   /// Creates new pool
@@ -108,7 +112,16 @@ class MySQLConnectionPool {
     this.timeZone,
     this.onConnectionOpen,
     this.retryOptions = const MySQLPoolRetryOptions(),
-  }) : _password = password;
+    this.autoPreparedStatementCacheCapacity = 32,
+  }) : _password = password {
+    if (autoPreparedStatementCacheCapacity < 1) {
+      throw ArgumentError.value(
+        autoPreparedStatementCacheCapacity,
+        'autoPreparedStatementCacheCapacity',
+        'must be at least 1',
+      );
+    }
+  }
 
   /// Number of active connections in this pool
   /// Active are connections which are currently interacting with the database
@@ -136,6 +149,12 @@ class MySQLConnectionPool {
     Map<String, dynamic>? params,
     bool iterable = false,
   ]) async {
+    if (iterable) {
+      throw MySQLClientException(
+        "MySQLConnectionPool.execute(..., iterable: true) is not supported because the stream keeps the connection busy. Use pool.withConnection((conn) => conn.execute(..., null, true)) and consume the stream before returning the connection.",
+      );
+    }
+
     final pooled = await _getFreeConnection();
     try {
       final result = await pooled.connection.execute(query, params, iterable);
@@ -158,16 +177,29 @@ class MySQLConnectionPool {
     _activeConnections.clear();
   }
 
-  /// See [MySQLConnection.prepare]
-  Future<PreparedStmt> prepare(String query, [bool iterable = false]) async {
+  Future<T> withPrepared<T>(
+    String query,
+    FutureOr<T> Function(PreparedStmt stmt) callback, [
+    bool iterable = false,
+  ]) async {
     final pooled = await _getFreeConnection();
+    var hadError = false;
     try {
-      final stmt = pooled.connection.prepare(query, iterable);
-      await _releaseConnection(pooled);
-      return stmt;
+      final stmt = await pooled.connection.prepare(query, iterable);
+      try {
+        return await callback(stmt);
+      } finally {
+        try {
+          await stmt.deallocate();
+        } catch (_) {
+          hadError = true;
+        }
+      }
     } catch (e) {
-      await _releaseConnection(pooled, hadError: true);
+      hadError = true;
       rethrow;
+    } finally {
+      await _releaseConnection(pooled, hadError: hadError);
     }
   }
 
@@ -222,8 +254,9 @@ class MySQLConnectionPool {
         return _createAndTrackConnection();
       }
 
-      // otherwise wait a bit for a connection to become idle
-      await Future.delayed(const Duration(milliseconds: 10));
+      final waiter = Completer<_PooledConnection>();
+      _waiters.addLast(waiter);
+      return waiter.future;
     }
   }
 
@@ -242,6 +275,7 @@ class MySQLConnectionPool {
         onBadCertificate: onBadCertificate,
         allowPublicKeyRetrieval: allowPublicKeyRetrieval,
         serverPublicKey: serverPublicKey,
+        autoPreparedStatementCacheCapacity: autoPreparedStatementCacheCapacity,
       );
 
       await conn.connect(timeoutMs: timeoutMs);
@@ -277,6 +311,15 @@ class MySQLConnectionPool {
 
     if (_shouldRecycle(pooled)) {
       await _retireConnection(pooled);
+      _wakeNextWaiter();
+      return;
+    }
+
+    if (_waiters.isNotEmpty) {
+      final waiter = _waiters.removeFirst();
+      pooled.markBorrowed();
+      _activeConnections.add(pooled);
+      waiter.complete(pooled);
       return;
     }
 
@@ -338,5 +381,28 @@ class MySQLConnectionPool {
     try {
       await pooled.connection.close();
     } catch (_) {}
+  }
+
+  void _wakeNextWaiter() {
+    if (_waiters.isEmpty) {
+      return;
+    }
+
+    unawaited(() async {
+      while (_waiters.isNotEmpty) {
+        final waiter = _waiters.removeFirst();
+        try {
+          final pooled = await _getFreeConnection();
+          if (!waiter.isCompleted) {
+            waiter.complete(pooled);
+          }
+          return;
+        } catch (error, stackTrace) {
+          if (!waiter.isCompleted) {
+            waiter.completeError(error, stackTrace);
+          }
+        }
+      }
+    }());
   }
 }

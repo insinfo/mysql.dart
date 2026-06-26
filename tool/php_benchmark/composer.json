@@ -1,0 +1,6 @@
+{
+    "require": {
+        "react/mysql": "^0.6.0",
+        "amphp/mysql": "^3.1"
+    }
+}

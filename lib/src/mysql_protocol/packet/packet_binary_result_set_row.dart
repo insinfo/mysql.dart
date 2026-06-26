@@ -32,9 +32,8 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
   ///
   /// Lança [MySQLProtocolException] se o header do pacote não for 0x00.
   factory MySQLBinaryResultSetRowPacket.decode(
-    Uint8List buffer,
-    List<MySQLColumnDefinitionPacket> colDefs,
-  ) {
+      Uint8List buffer, List<MySQLColumnDefinitionPacket> colDefs,
+      {List<bool>? textualColumns}) {
     final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
@@ -48,35 +47,56 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
     }
 
     // Inicializa a lista de valores (pode conter diferentes tipos).
-    List<dynamic> values = [];
+    final values = List<dynamic>.filled(colDefs.length, null, growable: false);
 
     // Calcula o tamanho do null bitmap.
     // O tamanho do bitmap é determinado por: ((numCols + 9) / 8).floor()
-    int nullBitmapSize = ((colDefs.length + 9) / 8).floor();
-
-    // Obtém o null bitmap a partir do buffer.
-    final nullBitmap = Uint8List.sublistView(
-      buffer,
-      offset,
-      offset + nullBitmapSize,
-    );
+    final nullBitmapSize = (colDefs.length + 9) >> 3;
+    final nullBitmapOffset = offset;
     offset += nullBitmapSize;
 
     // Itera sobre cada coluna para decodificar os dados.
     for (int x = 0; x < colDefs.length; x++) {
       // Determina qual byte e bit verificar no bitmap.
-      final bitmapByteIndex = ((x + 2) / 8).floor();
-      final bitmapBitIndex = (x + 2) % 8;
-      final byteToCheck = nullBitmap[bitmapByteIndex];
+      final bit = x + 2;
+      final bitmapByteIndex = bit >> 3;
+      final bitmapBitIndex = bit & 7;
+      final byteToCheck = buffer[nullBitmapOffset + bitmapByteIndex];
       final isNull = (byteToCheck & (1 << bitmapBitIndex)) != 0;
 
       if (isNull) {
-        // Se o bit correspondente está setado, o valor da coluna é NULL.
-        values.add(null);
+        // Já inicializado com null.
       } else {
+        final colDef = colDefs[x];
+        final colType = colDef.type.intVal;
+        if (_isLengthEncodedBinaryColumnType(colType)) {
+          final packedLength = _readLengthEncodedHeader(buffer, offset);
+          final headerLength = packedLength & 0x0f;
+          final valueLength = packedLength >> 4;
+          final valueStart = offset + headerLength;
+          final valueEnd = valueStart + valueLength;
+
+          if (valueEnd > buffer.length) {
+            throw MySQLProtocolException(
+              "Cannot decode MySQLBinaryResultSetRowPacket: length-encoded column exceeds packet size",
+            );
+          }
+
+          final fieldBytes =
+              Uint8List.sublistView(buffer, valueStart, valueEnd);
+          offset = valueEnd;
+          values[x] = _shouldDecodeLengthEncodedColumnAsText(
+            colDef,
+            textualColumns?[x],
+          )
+              ? utf8.decode(fieldBytes, allowMalformed: true)
+              : fieldBytes;
+          continue;
+        }
+
         // Caso contrário, chama a função parseBinaryColumnData para ler o valor.
         final parseResult = parseBinaryColumnData(
-          colDefs[x].type.intVal,
+          colType,
           byteData,
           buffer,
           offset,
@@ -84,11 +104,12 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
         // Avança o offset de acordo com o número de bytes lidos.
         offset += parseResult.item2;
         var value = parseResult.item1;
-        if (value is Uint8List && columnShouldBeTextual(colDefs[x])) {
+        if (value is Uint8List &&
+            (textualColumns?[x] ?? columnShouldBeTextual(colDefs[x]))) {
           // Prepared statements also deliver textual blobs using the negotiated charset; decode accordingly.
           value = utf8.decode(value, allowMalformed: true);
         }
-        values.add(value);
+        values[x] = value;
       }
     }
 
@@ -102,4 +123,86 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
     throw UnimplementedError(
         "Encode not implemented for MySQLBinaryResultSetRowPacket");
   }
+}
+
+@pragma('vm:prefer-inline')
+bool _isLengthEncodedBinaryColumnType(int colType) {
+  switch (colType) {
+    case mysqlColumnTypeString:
+    case mysqlColumnTypeVarString:
+    case mysqlColumnTypeVarChar:
+    case mysqlColumnTypeEnum:
+    case mysqlColumnTypeSet:
+    case mysqlColumnTypeJson:
+    case mysqlColumnTypeDecimal:
+    case mysqlColumnTypeNewDecimal:
+    case mysqlColumnTypeLongBlob:
+    case mysqlColumnTypeMediumBlob:
+    case mysqlColumnTypeBlob:
+    case mysqlColumnTypeTinyBlob:
+    case mysqlColumnTypeGeometry:
+    case mysqlColumnTypeBit:
+      return true;
+    default:
+      return false;
+  }
+}
+
+@pragma('vm:prefer-inline')
+bool _shouldDecodeLengthEncodedColumnAsText(
+  MySQLColumnDefinitionPacket colDef,
+  bool? knownTextualColumn,
+) {
+  final colType = colDef.type.intVal;
+  switch (colType) {
+    case mysqlColumnTypeString:
+    case mysqlColumnTypeVarString:
+    case mysqlColumnTypeVarChar:
+    case mysqlColumnTypeEnum:
+    case mysqlColumnTypeSet:
+    case mysqlColumnTypeJson:
+    case mysqlColumnTypeDecimal:
+    case mysqlColumnTypeNewDecimal:
+      return true;
+    case mysqlColumnTypeLongBlob:
+    case mysqlColumnTypeMediumBlob:
+    case mysqlColumnTypeBlob:
+    case mysqlColumnTypeTinyBlob:
+      return knownTextualColumn ?? columnShouldBeTextual(colDef);
+    default:
+      return false;
+  }
+}
+
+@pragma('vm:prefer-inline')
+int _readLengthEncodedHeader(Uint8List buffer, int offset) {
+  final first = buffer[offset];
+
+  if (first < 0xfb) {
+    return (first << 4) | 1;
+  }
+
+  if (first == 0xfc) {
+    final value = buffer[offset + 1] | (buffer[offset + 2] << 8);
+    return (value << 4) | 3;
+  }
+
+  if (first == 0xfd) {
+    final value = buffer[offset + 1] |
+        (buffer[offset + 2] << 8) |
+        (buffer[offset + 3] << 16);
+    return (value << 4) | 4;
+  }
+
+  if (first == 0xfe) {
+    var value = 0;
+    for (var i = 0; i < 8; i++) {
+      value |= buffer[offset + 1 + i] << (8 * i);
+    }
+    return (value << 4) | 9;
+  }
+
+  throw MySQLProtocolException(
+    "Cannot decode MySQLBinaryResultSetRowPacket: invalid length-encoded column header",
+  );
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 
@@ -106,16 +107,15 @@ void main() {
     }
   });
 
-  test('Prepare: Cria e executa prepared statement usando parâmetros nomeados',
+  test('withPrepared: cria e executa prepared statement com ownership seguro',
       () async {
     final tables = await createTemporaryTables(pool);
     try {
-      // Cria um prepared statement usando a sintaxe com parâmetros nomeados
-      final stmt = await pool.prepare("UPDATE ${tables['book']} SET price = ?");
-      // Executa a atualização definindo o preço para 400
-      final result = await stmt.execute([400]);
+      final result = await pool.withPrepared(
+        "UPDATE ${tables['book']} SET price = ?",
+        (stmt) => stmt.execute([400]),
+      );
       expect(result.affectedRows.toInt(), equals(2));
-      await stmt.deallocate();
 
       final resultBook = await pool.execute("SELECT * FROM ${tables['book']}");
       for (final row in resultBook.rows) {
@@ -354,6 +354,19 @@ void main() {
     } finally {
       await tempPool.close();
     }
+  });
+
+  test('execute iterable via pool falha com mensagem explicativa', () async {
+    await expectLater(
+      () => pool.execute('SELECT 1 AS value', null, true),
+      throwsA(
+        isA<MySQLClientException>().having(
+          (e) => e.toString(),
+          'message',
+          contains('withConnection'),
+        ),
+      ),
+    );
   });
 
   test('close encerra todas as conexões e limpa listas internas', () async {

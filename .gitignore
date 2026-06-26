@@ -10,3 +10,7 @@ pubspec.lock
 merged_mysql.dart_code.dart.txt
 
 mysql_example2.dart
+
+.benchmark_workspace/
+benchmark/reports/
+tool/php_benchmark/vendor/

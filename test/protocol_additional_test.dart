@@ -465,5 +465,30 @@ void main() {
 
       expect(packet.encode(), [0x03, 0x00, 0x00, 0x07, 0xaa, 0xbb, 0x00]);
     });
+
+    test('stmt execute packet can skip resending parameter types', () {
+      final withTypes = MySQLPacketCommStmtExecute(
+        stmtID: 99,
+        params: [40, 2],
+        paramTypeCodes: Uint8List.fromList(
+          [mysqlColumnTypeTiny, mysqlColumnTypeTiny],
+        ),
+        sendTypes: true,
+      ).encode();
+
+      final withoutTypes = MySQLPacketCommStmtExecute(
+        stmtID: 99,
+        params: [40, 2],
+        paramTypeCodes: Uint8List.fromList(
+          [mysqlColumnTypeTiny, mysqlColumnTypeTiny],
+        ),
+        sendTypes: false,
+      ).encode();
+
+      expect(withTypes[11], 1);
+      expect(withoutTypes[11], 0);
+      expect(withTypes.length, greaterThan(withoutTypes.length));
+      expect(withoutTypes.sublist(withoutTypes.length - 2), [40, 2]);
+    });
   });
 }

@@ -118,14 +118,18 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
   /// Lista de parâmetros para o statement.
   final List<dynamic> params;
 
-  /// Lista de tipos MySQL dos parâmetros, já determinados (ou inferidos).
-  final List<MySQLColumnType?> paramTypes;
+  /// Tipos MySQL dos parâmetros em formato já serializado (1 byte por parâmetro).
+  final Uint8List paramTypeCodes;
+
+  /// Indica se os tipos precisam ser reenviados nesta execução.
+  final bool sendTypes;
 
   /// Construtor da classe.
   MySQLPacketCommStmtExecute({
     required this.stmtID,
     required this.params,
-    required this.paramTypes,
+    required this.paramTypeCodes,
+    required this.sendTypes,
   });
 
   /// Codifica o comando COM_STMT_EXECUTE em um [Uint8List] para envio ao servidor.
@@ -170,19 +174,13 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       // Escreve o null-bitmap no buffer
       buffer.write(nullBitmap);
 
-      // Escreve o new-param-bound flag (1 byte; valor 1 indica que os tipos seguem)
-      buffer.writeUint8(1);
+      // Escreve o new-param-bound flag.
+      buffer.writeUint8(sendTypes ? 1 : 0);
 
-      // Escreve os tipos dos parâmetros (2 bytes por parâmetro)
-      for (int i = 0; i < params.length; i++) {
-        final paramType = paramTypes[i];
-        if (paramType == null) {
-          // Se for nulo, o tipo é mysqlColumnTypeNull = 0x06
-          buffer.writeUint8(mysqlColumnTypeNull);
-          buffer.writeUint8(0); // Flag "unsigned" ou outro, geralmente 0
-        } else {
-          buffer.writeUint8(paramType.intVal);
-          // Por exemplo, se quiser indicar "unsigned", poderia setar algo. Aqui, 0 = sem flag.
+      // Escreve os tipos dos parâmetros (2 bytes por parâmetro) apenas quando necessário.
+      if (sendTypes) {
+        for (int i = 0; i < params.length; i++) {
+          buffer.writeUint8(paramTypeCodes[i]);
           buffer.writeUint8(0);
         }
       }
@@ -190,8 +188,8 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       // Escreve os valores dos parâmetros não-nulos
       for (int i = 0; i < params.length; i++) {
         final param = params[i];
-        final paramType = paramTypes[i];
-        if (param != null && paramType != null) {
+        if (param != null) {
+          final paramType = MySQLColumnType.create(paramTypeCodes[i]);
           _writeParamValue(buffer, param, paramType);
         }
       }

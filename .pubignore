@@ -1,0 +1,6 @@
+/.benchmark_workspace/
+/benchmark/reports/
+/build/
+/example/mysql_example2.dart
+/scripts/merged_mysql.dart_code.dart.txt
+/tool/php_benchmark/vendor/

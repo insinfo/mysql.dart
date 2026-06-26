@@ -35,19 +35,18 @@ class MySQLPacketOK extends MySQLPacketPayload {
   ///
   /// O método utiliza a função [getVariableEncInt] para decodificar os valores length-encoded.
   factory MySQLPacketOK.decode(Uint8List buffer) {
-    final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
     // 1) Leitura do header (1 byte)
-    final header = byteData.getUint8(offset);
+    final header = buffer[offset];
     offset += 1;
 
     // 2) Leitura do número de linhas afetadas (length-encoded integer)
-    final affectedRows = byteData.getVariableEncInt(offset);
+    final affectedRows = buffer.getVariableEncIntAt(offset);
     offset += affectedRows.item2;
 
     // 3) Leitura do último ID inserido (length-encoded integer)
-    final lastInsertID = byteData.getVariableEncInt(offset);
+    final lastInsertID = buffer.getVariableEncIntAt(offset);
     offset += lastInsertID.item2;
 
     return MySQLPacketOK(

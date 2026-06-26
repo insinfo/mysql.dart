@@ -7,6 +7,47 @@ import 'package:mysql_dart/src/utils/tuple2.dart';
 /// Extensão para [Uint8List] contendo métodos auxiliares para ler strings e
 /// dados length-encoded conforme o protocolo MySQL.
 extension MySQLUint8ListExtension on Uint8List {
+  @pragma('vm:prefer-inline')
+  Tuple2<BigInt, int> getVariableEncIntAt(int startOffset) {
+    final firstByte = this[startOffset];
+
+    if (firstByte < 0xfb) {
+      return Tuple2(BigInt.from(firstByte), 1);
+    }
+
+    if (firstByte == 0xfc) {
+      final value = this[startOffset + 1] | (this[startOffset + 2] << 8);
+      return Tuple2(BigInt.from(value), 3);
+    }
+
+    if (firstByte == 0xfd) {
+      final value = this[startOffset + 1] |
+          (this[startOffset + 2] << 8) |
+          (this[startOffset + 3] << 16);
+      return Tuple2(BigInt.from(value), 4);
+    }
+
+    if (firstByte == 0xfe) {
+      final low = this[startOffset + 1] |
+          (this[startOffset + 2] << 8) |
+          (this[startOffset + 3] << 16) |
+          (this[startOffset + 4] << 24);
+      final high = this[startOffset + 5] |
+          (this[startOffset + 6] << 8) |
+          (this[startOffset + 7] << 16) |
+          (this[startOffset + 8] << 24);
+
+      return Tuple2(
+        (BigInt.from(high) << 32) | BigInt.from(low & 0xffffffff),
+        9,
+      );
+    }
+
+    throw MySQLProtocolException(
+      "Wrong first byte, while decoding getVariableEncInt",
+    );
+  }
+
   /// Lê uma string UTF-8 terminada em nulo (null-terminated) a partir de [startOffset].
   ///
   /// Retorna uma [Tuple2] onde:
@@ -15,13 +56,15 @@ extension MySQLUint8ListExtension on Uint8List {
   ///
   /// No protocolo MySQL, algumas strings são terminadas em byte 0x00 para sinalizar fim.
   Tuple2<String, int> getUtf8NullTerminatedString(int startOffset) {
-    // Obtém os bytes a partir de startOffset até encontrar um 0.
-    final tmp = Uint8List.sublistView(this, startOffset)
-        .takeWhile((value) => value != 0);
+    var endOffset = startOffset;
+    while (endOffset < length && this[endOffset] != 0) {
+      endOffset++;
+    }
 
-    // Decodifica para UTF-8 e retorna também o número de bytes consumidos
-    // (conteúdo + 1 byte nulo).
-    return Tuple2(utf8.decode(tmp.toList()), tmp.length + 1);
+    return Tuple2(
+      utf8.decode(Uint8List.sublistView(this, startOffset, endOffset)),
+      (endOffset - startOffset) + 1,
+    );
   }
 
   /// Lê uma string UTF-8 a partir de [startOffset] até o final do buffer.
@@ -43,18 +86,14 @@ extension MySQLUint8ListExtension on Uint8List {
   /// - item1: A string decodificada.
   /// - item2: O número total de bytes consumidos (tamanho do inteiro + tamanho da string).
   Tuple2<String, int> getUtf8LengthEncodedString(int startOffset) {
-    // `tmp` contém a porção do buffer a partir de startOffset.
-    final tmp = Uint8List.sublistView(this, startOffset);
-    final bd = ByteData.sublistView(tmp);
-
-    // Lê o tamanho da string (formato length-encoded).
-    final strLength = bd.getVariableEncInt(0);
+    final strLength = getVariableEncIntAt(startOffset);
+    final stringOffset = startOffset + strLength.item2;
 
     // Lê a string exatamente com `strLength.item1` bytes.
     final tmp2 = Uint8List.sublistView(
-      tmp,
-      strLength.item2,
-      strLength.item2 + strLength.item1.toInt(),
+      this,
+      stringOffset,
+      stringOffset + strLength.item1.toInt(),
     );
 
     // Decodifica em UTF-8 e soma (tamanho do inteiro + tamanho da string).
@@ -72,16 +111,16 @@ extension MySQLUint8ListExtension on Uint8List {
   /// - item1: Um [Uint8List] contendo os bytes lidos.
   /// - item2: O número total de bytes consumidos (tamanho do inteiro + tamanho dos bytes).
   Tuple2<Uint8List, int> getLengthEncodedBytes(int startOffset) {
-    final tmp = Uint8List.sublistView(this, startOffset);
-    final bd = ByteData.sublistView(tmp);
-
-    // Lê o tamanho em formato length-encoded.
-    final lengthTuple = bd.getVariableEncInt(0);
+    final lengthTuple = getVariableEncIntAt(startOffset);
     final length = lengthTuple.item1.toInt();
     final totalLength = lengthTuple.item2 + length;
 
     // Copia apenas `length` bytes após o inteiro que guarda o tamanho.
-    final bytes = Uint8List.sublistView(tmp, lengthTuple.item2, totalLength);
+    final bytes = Uint8List.sublistView(
+      this,
+      startOffset + lengthTuple.item2,
+      startOffset + totalLength,
+    );
     return Tuple2(bytes, totalLength);
   }
 }
@@ -109,34 +148,19 @@ extension MySQLByteDataExtension on ByteData {
     }
 
     if (firstByte == 0xfc) {
-      // Próximos 2 bytes.
-      final radix =
-          getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
-      return Tuple2(BigInt.parse(radix, radix: 16), 3);
+      return Tuple2(BigInt.from(getUint16(startOffset + 1, Endian.little)), 3);
     }
 
     if (firstByte == 0xfd) {
-      // Próximos 3 bytes.
-      final radix =
-          getUint8(startOffset + 3).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
-      return Tuple2(BigInt.parse(radix, radix: 16), 4);
+      final value = getUint16(startOffset + 1, Endian.little) |
+          (getUint8(startOffset + 3) << 16);
+      return Tuple2(BigInt.from(value), 4);
     }
 
     if (firstByte == 0xfe) {
-      // Próximos 8 bytes.
-      final radix =
-          getUint8(startOffset + 8).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 7).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 6).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 5).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 4).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 3).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 2).toRadixString(16).padLeft(2, '0') +
-              getUint8(startOffset + 1).toRadixString(16).padLeft(2, '0');
-      return Tuple2(BigInt.parse(radix, radix: 16), 9);
+      final low = getUint32(startOffset + 1, Endian.little);
+      final high = getUint32(startOffset + 5, Endian.little);
+      return Tuple2((BigInt.from(high) << 32) | BigInt.from(low), 9);
     }
 
     throw MySQLProtocolException(
@@ -146,10 +170,7 @@ extension MySQLByteDataExtension on ByteData {
 
   /// Lê um inteiro de 2 bytes (little-endian) a partir de [startOffset].
   int getInt2(int startOffset) {
-    final bd = ByteData(2);
-    bd.setUint8(0, getUint8(startOffset));
-    bd.setUint8(1, getUint8(startOffset + 1));
-    return bd.getUint16(0, Endian.little);
+    return getUint8(startOffset) | (getUint8(startOffset + 1) << 8);
   }
 
   /// Lê um inteiro de 3 bytes (little-endian) a partir de [startOffset].
@@ -157,12 +178,9 @@ extension MySQLByteDataExtension on ByteData {
   /// Esse formato (3 bytes) ocorre em algumas partes do protocolo
   /// que usam "int<3>" para valores como comprimentos ou contagens menores que 16M.
   int getInt3(int startOffset) {
-    final bd = ByteData(4);
-    bd.setUint8(0, getUint8(startOffset));
-    bd.setUint8(1, getUint8(startOffset + 1));
-    bd.setUint8(2, getUint8(startOffset + 2));
-    bd.setUint8(3, 0);
-    return bd.getUint32(0, Endian.little);
+    return getUint8(startOffset) |
+        (getUint8(startOffset + 1) << 8) |
+        (getUint8(startOffset + 2) << 16);
   }
 }
 

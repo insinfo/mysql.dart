@@ -106,7 +106,7 @@ class MySQLColumnDefinitionPacket extends MySQLPacketPayload {
     offset += orgNameLE.item2;
 
     // 7) Lê lengthOfFixedLengthFields (geralmente 0x0c)
-    final lengthOfFixedLengthFields = byteData.getVariableEncInt(offset);
+    final lengthOfFixedLengthFields = buffer.getVariableEncIntAt(offset);
     offset += lengthOfFixedLengthFields.item2;
 
     // 8) Lê charset (2 bytes, little-endian)

@@ -1,10 +1,25 @@
-## 1.3.0
+## 2.0.0
 
 - feat: added compatibility with MySQL Community Server 9 and 9.7, including `caching_sha2_password` full authentication with TLS, pinned RSA public keys, or optional server public key retrieval
 - feat: binary protocol now supports MySQL JSON columns (`column type 245`), decoding them as UTF-8 JSON strings instead of failing at the protocol layer
 - feat: integration tests now read `MYSQL_*` environment variables so they can run against any local or CI port/configuration
 - ci: GitHub Actions now runs the test suite against MySQL 9.7 in addition to the existing database coverage
 - refactor: removed external runtime dependencies on `asn1lib`, `pointycastle`, `buffer`, `crypto`, and `tuple` by inlining the required PEM/RSA/OAEP, hashing, tuple, and byte-writer logic
+- perf: removed artificial latency from `connect()` and `close()` by replacing handshake polling with `Completer` signaling and removing the fixed close delay
+- perf: `connect()` now supports `setCharsetOnConnect: false`, allowing the initial charset/collation `SET` round-trip to be measured or skipped explicitly
+- perf: packet header parsing, length-encoded integers, null-terminated strings, and packet splitting were rewritten to avoid hot-path temporary objects and repeated list concatenation
+- perf: `COM_STMT_EXECUTE` now skips resending parameter type metadata when the parameter signature has not changed for the prepared statement
+- perf: textual result-set row decoding now parses length-encoded cells inline, removing per-cell helper tuple allocation in the large result-set path
+- perf: binary result-set row decoding now fast-paths common length-encoded column types, reducing per-cell helper dispatch and tuple allocation for `VARCHAR`, `TEXT`, `JSON`, `DECIMAL`, `BLOB`, `BIT`, and `GEOMETRY`
+- perf: result-set metadata now caches case-insensitive column name lookups and precomputed Dart type hints, reducing repeated work in `colByName()`, `typedColByName()`, and `typedAssoc()`
+- feat: iterable result sets now propagate stream `pause` / `resume` to the socket subscription, enabling real backpressure for row-by-row consumers
+- feat: benchmark tooling now separates TLS vs non-TLS runs, measures connect latency with and without the initial charset `SET`, records `median`, `p95`, and `p99`, and compares materialized vs streaming result sets
+- feat: added profiling and stress tools for result-set heap inspection (`vm_service`) and auto-prepared statement cache behavior under hot-set and thrash-set workloads
+- feat: `MySQLConnection` now exposes auto-prepared statement cache statistics for hits, misses, evictions, deferred closes, and current cache occupancy
+- feat: auto-prepared statement cache capacity is now configurable per connection and per pool with `autoPreparedStatementCacheCapacity`
+- breaking: `MySQLConnectionPool.execute(..., iterable: true)` was removed because streamed results keep the physical connection busy until EOF and the old pooled flow could release the connection early
+- breaking: `MySQLConnectionPool.prepare()` was removed and replaced by `withPrepared(...)`, because prepared statements are bound to one physical connection and the old API could return a statement whose owning connection had already been reused by unrelated work
+- docs: README and roadmap now document the new pooling constraints, `withPrepared(...)`, iterable result-set backpressure, benchmark methodology, and the distinction between locally tested and CI-covered server versions
 
 ## 1.2.1
 

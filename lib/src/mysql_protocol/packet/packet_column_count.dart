@@ -25,9 +25,8 @@ class MySQLPacketColumnCount extends MySQLPacketPayload {
   /// O buffer contém o número de colunas codificado como um inteiro com codificação length-encoded.
   /// A função [getVariableEncInt] é utilizada para extrair esse valor a partir do início do buffer.
   factory MySQLPacketColumnCount.decode(Uint8List buffer) {
-    final byteData = ByteData.sublistView(buffer);
-    final columnCount = byteData.getVariableEncInt(0);
-    
+    final columnCount = buffer.getVariableEncIntAt(0);
+
     return MySQLPacketColumnCount(
       columnCount: columnCount.item1,
     );
@@ -36,6 +35,7 @@ class MySQLPacketColumnCount extends MySQLPacketPayload {
   /// Método de codificação não implementado.
   @override
   Uint8List encode() {
-    throw UnimplementedError("Encode não implementado para MySQLPacketColumnCount");
+    throw UnimplementedError(
+        "Encode não implementado para MySQLPacketColumnCount");
   }
 }

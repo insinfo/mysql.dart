@@ -1,7 +1,6 @@
 import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
-import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 import 'package:mysql_dart/src/utils/hash.dart';
 import 'package:mysql_dart/src/utils/tuple2.dart';
 
@@ -82,30 +81,26 @@ class MySQLPacket {
   ///
   /// Lê os 3 primeiros bytes do [buffer] para calcular [payloadLength]
   /// e soma 4 (bytes do cabeçalho).
-  static int getPacketLength(Uint8List buffer) {
-    var header = ByteData(4)
-      ..setUint8(0, buffer[0])
-      ..setUint8(1, buffer[1])
-      ..setUint8(2, buffer[2])
-      ..setUint8(3, 0);
-    final payloadLength = header.getUint32(0, Endian.little);
-    return payloadLength + 4;
+  @pragma('vm:prefer-inline')
+  static int getPacketLength(Uint8List buffer, [int offset = 0]) {
+    return getPayloadLength(buffer, offset) + 4;
+  }
+
+  @pragma('vm:prefer-inline')
+  static int getPayloadLength(Uint8List buffer, [int offset = 0]) {
+    return buffer[offset] |
+        (buffer[offset + 1] << 8) |
+        (buffer[offset + 2] << 16);
+  }
+
+  @pragma('vm:prefer-inline')
+  static int getSequenceId(Uint8List buffer, [int offset = 0]) {
+    return buffer[offset + 3];
   }
 
   /// Decodifica o cabeçalho do pacote, retornando (payloadLength, sequenceID).
   static Tuple2<int, int> decodePacketHeader(Uint8List buffer) {
-    final byteData = ByteData.sublistView(buffer);
-    // Lê os 3 primeiros bytes para payloadLength.
-    var header = ByteData(4)
-      ..setUint8(0, buffer[0])
-      ..setUint8(1, buffer[1])
-      ..setUint8(2, buffer[2])
-      ..setUint8(3, 0);
-    final payloadLength = header.getUint32(0, Endian.little);
-
-    // O 4º byte é o sequenceNumber.
-    final sequenceNumber = byteData.getUint8(3);
-    return Tuple2(payloadLength, sequenceNumber);
+    return Tuple2(getPayloadLength(buffer), getSequenceId(buffer));
   }
 
   /// Detecta o tipo genérico do pacote com base no primeiro byte do payload.
@@ -116,10 +111,8 @@ class MySQLPacket {
   /// - 0xff -> Error,
   /// - Caso contrário -> other.
   static MySQLGenericPacketType detectPacketType(Uint8List buffer) {
-    final byteData = ByteData.sublistView(buffer);
-    final header = decodePacketHeader(buffer);
-    final payloadLength = header.item1;
-    final type = byteData.getUint8(4);
+    final payloadLength = getPayloadLength(buffer);
+    final type = buffer[4];
     if (type == 0x00 && payloadLength >= 7) {
       return MySQLGenericPacketType.ok;
     } else if (type == 0xfe && payloadLength < 9) {
@@ -253,14 +246,14 @@ class MySQLPacket {
 
   /// Decodifica uma linha de ResultSet em formato textual [MySQLResultSetRowPacket].
   factory MySQLPacket.decodeResultSetRowPacket(
-    Uint8List buffer,
-    List<MySQLColumnDefinitionPacket> colDefs,
-  ) {
+      Uint8List buffer, List<MySQLColumnDefinitionPacket> colDefs,
+      {List<bool>? binaryColumns}) {
     final header = decodePacketHeader(buffer);
     final offset = 4;
     final payload = MySQLResultSetRowPacket.decode(
       Uint8List.sublistView(buffer, offset),
       colDefs,
+      binaryColumns: binaryColumns,
     );
     return MySQLPacket(
       sequenceID: header.item2,
@@ -271,14 +264,14 @@ class MySQLPacket {
 
   /// Decodifica uma linha de ResultSet em formato binário [MySQLBinaryResultSetRowPacket].
   factory MySQLPacket.decodeBinaryResultSetRowPacket(
-    Uint8List buffer,
-    List<MySQLColumnDefinitionPacket> colDefs,
-  ) {
+      Uint8List buffer, List<MySQLColumnDefinitionPacket> colDefs,
+      {List<bool>? textualColumns}) {
     final header = decodePacketHeader(buffer);
     final offset = 4;
     final payload = MySQLBinaryResultSetRowPacket.decode(
       Uint8List.sublistView(buffer, offset),
       colDefs,
+      textualColumns: textualColumns,
     );
     return MySQLPacket(
       sequenceID: header.item2,
@@ -339,19 +332,14 @@ class MySQLPacket {
   /// Codifica o pacote (cabeçalho + payload) em um [Uint8List] para envio ao servidor.
   Uint8List encode() {
     final payloadData = payload.encode();
-
-    // Prepara 4 bytes para o cabeçalho:
-    // 3 bytes para length, 1 para sequenceID.
-    final header = ByteData(4);
-    header.setUint8(0, payloadData.lengthInBytes & 0xFF);
-    header.setUint8(1, (payloadData.lengthInBytes >> 8) & 0xFF);
-    header.setUint8(2, (payloadData.lengthInBytes >> 16) & 0xFF);
-    header.setUint8(3, sequenceID);
-
-    final writer = ByteDataWriter(endian: Endian.little);
-    writer.write(header.buffer.asUint8List());
-    writer.write(payloadData);
-    return writer.toBytes();
+    final payloadLength = payloadData.lengthInBytes;
+    final out = Uint8List(payloadLength + 4);
+    out[0] = payloadLength & 0xFF;
+    out[1] = (payloadLength >> 8) & 0xFF;
+    out[2] = (payloadLength >> 16) & 0xFF;
+    out[3] = sequenceID;
+    out.setRange(4, out.length, payloadData);
+    return out;
   }
 }
 
