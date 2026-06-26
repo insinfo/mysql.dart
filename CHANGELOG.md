@@ -6,6 +6,9 @@
 - ci: GitHub Actions now runs the test suite against MySQL 9.7 in addition to the existing database coverage
 - refactor: removed external runtime dependencies on `asn1lib`, `pointycastle`, `buffer`, `crypto`, and `tuple` by inlining the required PEM/RSA/OAEP, hashing, tuple, and byte-writer logic
 - perf: removed artificial latency from `connect()` and `close()` by replacing handshake polling with `Completer` signaling and removing the fixed close delay
+- perf: compiled AOT benchmark now reaches `0.532 ms` average connect latency, `11,255` text queries/s, `11,362` prepared queries/s, and `839,539` rows/s on 10,000-row result sets in the local MariaDB benchmark
+- perf: local AOT benchmark beats PHP PDO on connect latency, `SELECT 1`, and 10,000-row result-set throughput, and beats PHP mysqli on connect latency and 10,000-row throughput while mysqli still leads tiny prepared statements through its native C extension
+- perf: documented remaining performance headroom after 2.0.0, especially direct `COM_STMT_EXECUTE` encoding, per-result-set decode plans, lower row wrapper allocation, streaming memory behavior, and the final incremental packet reader/ring buffer
 - perf: `connect()` now supports `setCharsetOnConnect: false`, allowing the initial charset/collation `SET` round-trip to be measured or skipped explicitly
 - perf: packet header parsing, length-encoded integers, null-terminated strings, and packet splitting were rewritten to avoid hot-path temporary objects and repeated list concatenation
 - perf: `COM_STMT_EXECUTE` now skips resending parameter type metadata when the parameter signature has not changed for the prepared statement

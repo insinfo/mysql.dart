@@ -25,6 +25,9 @@ Also verified outside CI:
 
 ### What's New in 2.0.0
 
+- The compiled AOT driver is now the headline performance path: in the local MariaDB benchmark it reached `0.532 ms` average connect latency, `11,255` text queries/s, `11,362` prepared queries/s, and `839,539` rows/s on 10,000-row result sets.
+- In that same local AOT benchmark, `mysql_dart` 2.0.0 beats PHP PDO on connect latency, `SELECT 1`, and 10,000-row result-set throughput, and beats PHP mysqli on connect latency and 10,000-row throughput. PHP mysqli still leads tiny prepared statements through its native C extension.
+- Performance work is not finished: the next targets are direct `COM_STMT_EXECUTE` encoding, per-result-set decode plans, fewer row wrapper allocations, a cheaper streaming path for large result sets, and a final incremental packet reader/ring buffer.
 - Added compatibility with MySQL Community Server 9 and 9.7, including full `caching_sha2_password` authentication with TLS, pinned RSA public keys, or optional server public key retrieval.
 - Added binary protocol support for MySQL JSON columns (`column type 245`), decoding them as UTF-8 JSON strings instead of failing at the protocol layer.
 - Integration tests now read `MYSQL_*` environment variables, so the suite can run against arbitrary local or CI host/port/database configurations.
@@ -77,31 +80,34 @@ Environment:
 - Transport: plain TCP (`MYSQL_SECURE=false`)
 - PHP: `8.3.11` NTS
 - Dart SDK: `3.6.2`
+- Dart modes: JIT (`dart run`) and AOT (`dart compile exe`)
 - Workload: `2000` scalar iterations, `20` connect iterations, result sets of `10`, `1000`, and `10000` rows with positional row access
-- Command: `powershell -ExecutionPolicy Bypass -File tool/run_driver_comparison.ps1`
+- Command: `powershell -ExecutionPolicy Bypass -File tool/run_driver_comparison.ps1`; AOT generated with `dart compile exe tool/benchmark_mysql_dart_compat.dart -o build/benchmark_mysql_dart_compat_2_0_0.exe`
 
 Scalar results:
 
-| Metric | mysql_dart 2.0.0 | mysql_dart 1.2.1 | PHP PDO | PHP mysqli | ReactPHP mysql | AMPHP mysql |
-|---|---:|---:|---:|---:|---:|---:|
-| Connect avg ms | 1.131 | 130.411 | 2.711 | 13.266 | 156.278 | 0.618 |
-| Text ops/s | 6432 | 6562 | 7333 | 12287 | 7572 | 5092 |
-| Auto prepared ops/s | 7113 | 7115 | - | 7207 | 6651 | 2594 |
-| Prepared ops/s | 9702 | 10219 | 14741 | 15535 | - | 5065 |
+| Metric | mysql_dart 2.0.0 AOT | mysql_dart 2.0.0 JIT | mysql_dart 1.2.1 | PHP PDO | PHP mysqli | ReactPHP mysql | AMPHP mysql |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Connect avg ms | 0.532 | 1.131 | 130.411 | 2.711 | 13.266 | 156.278 | 0.618 |
+| Text ops/s | 11,255 | 6,432 | 6,562 | 7,333 | 12,287 | 7,572 | 5,092 |
+| Auto prepared ops/s | 11,259 | 7,113 | 7,115 | - | 7,207 | 6,651 | 2,594 |
+| Prepared ops/s | 11,362 | 9,702 | 10,219 | 14,741 | 15,535 | - | 5,065 |
 
 Result-set throughput:
 
-| Result set | mysql_dart 2.0.0 | mysql_dart 1.2.1 | PHP PDO | PHP mysqli | ReactPHP mysql | AMPHP mysql |
-|---|---:|---:|---:|---:|---:|---:|
-| 10 rows/s | 65,746 | 56,117 | 55,106 | 101,693 | 44,625 | 23,110 |
-| 1,000 rows/s | 499,413 | 278,505 | 507,616 | 729,219 | 136,012 | 64,428 |
-| 10,000 rows/s | 818,274 | 207,385 | 599,171 | 746,236 | 146,778 | 67,594 |
+| Result set | mysql_dart 2.0.0 AOT | mysql_dart 2.0.0 JIT | mysql_dart 1.2.1 | PHP PDO | PHP mysqli | ReactPHP mysql | AMPHP mysql |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 10 rows/s | 76,658 | 65,746 | 56,117 | 55,106 | 101,693 | 44,625 | 23,110 |
+| 1,000 rows/s | 539,127 | 499,413 | 278,505 | 507,616 | 729,219 | 136,012 | 64,428 |
+| 10,000 rows/s | 839,539 | 818,274 | 207,385 | 599,171 | 746,236 | 146,778 | 67,594 |
 
 Reading the numbers:
 
-- `mysql_dart` `2.0.0` removes the artificial connect latency present in `1.2.1`.
-- `mysqli` still leads scalar prepared statements because it uses the native PHP/MySQL C stack.
-- `mysql_dart` `2.0.0` is materially faster than `1.2.1` on large result sets after the parser and row materialization changes.
+- `mysql_dart` `2.0.0` AOT removes the artificial connect latency present in `1.2.1`, reducing average connect latency from `130.411 ms` to `0.532 ms` in this run.
+- AOT is the best Dart production number in this benchmark: it is faster than PDO on connect latency, `SELECT 1`, and 10,000-row result-set throughput.
+- AOT is faster than mysqli on connect latency and 10,000-row result-set throughput; `mysqli` still leads scalar prepared statements because it uses the native PHP/MySQL C stack.
+- `mysql_dart` `2.0.0` AOT is materially faster than `1.2.1` on large result sets after the parser and row materialization changes.
+- The driver has not reached the maximum possible Dart performance yet. Remaining expected gains are mostly in prepared-statement packet encoding, result-set cell decoding, row materialization, streaming memory behavior, and the packet reader.
 - ReactPHP's package does not expose a separate public prepared-statement object in the benchmark path, so only its parameterized query path is reported.
 
 ### Roadmap
