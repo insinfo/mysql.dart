@@ -2,40 +2,39 @@ name: Dart Testing
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
-  build:
+  mariadb:
+    name: MariaDB ${{ matrix.mariadb-version }} (${{ matrix.sdk }})
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false
       matrix:
         sdk: [3.6.0]
+        mariadb-version: ['10.11', '11.8']
 
     steps:
-      # 1) Faz checkout do repositório
       - name: Check out repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      # 2) Gera os certificados SSL (CA e certificado do servidor)
       - name: Generate SSL certificates
         run: |
           mkdir certs
 
-          # Gera CA autoassinada para teste
           openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout certs/ca-key.pem \
             -out certs/ca-cert.pem \
             -days 365 \
             -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=MyTestCA"
 
-          # Gera chave e CSR para o certificado do servidor
           openssl req -newkey rsa:2048 -nodes \
             -keyout certs/server-key.pem \
             -out certs/server-req.pem \
             -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=localhost"
-          # Assina o certificado do servidor com a CA
+
           openssl x509 -req \
             -in certs/server-req.pem \
             -CA certs/ca-cert.pem \
@@ -44,7 +43,6 @@ jobs:
             -out certs/server-cert.pem \
             -days 365
 
-      # 3) Cria um arquivo de configuração do MariaDB com caminhos absolutos para os certificados
       - name: Create MariaDB SSL config file
         run: |
           echo "[mysqld]" > my.cnf
@@ -53,7 +51,6 @@ jobs:
           echo "ssl_key=/etc/mysql/certs/server-key.pem" >> my.cnf
           echo "bind-address=0.0.0.0" >> my.cnf
 
-      # 4) Copia os certificados para um diretório acessível pelo MariaDB
       - name: Copy SSL certificates to MariaDB directory
         run: |
           sudo mkdir -p /etc/mysql/certs
@@ -64,46 +61,39 @@ jobs:
           sudo chmod 644 /etc/mysql/certs/ca-cert.pem /etc/mysql/certs/server-cert.pem
           sudo chmod 600 /etc/mysql/certs/server-key.pem
 
-      # 5) Sobe o MariaDB (não usamos o input my_cnf, pois ele não é suportado)
       - name: Setup MariaDB
         uses: ankane/setup-mariadb@v1
         with:
-          mariadb-version: "10.11"
+          mariadb-version: ${{ matrix.mariadb-version }}
           database: banco_teste
 
-      # 6) Copia o arquivo de configuração para o diretório do MariaDB e reinicia o serviço
       - name: Configure MariaDB for SSL
         run: |
           sudo cp my.cnf /etc/mysql/mariadb.conf.d/ssl.cnf
           sudo chown mysql:mysql /etc/mysql/mariadb.conf.d/ssl.cnf
           sudo systemctl restart mariadb
 
-      # 7) Verifica se o MariaDB está com SSL habilitado
-      - name: Verify MariaDB Installation
+      - name: Verify MariaDB installation
         run: |
           mysql --version
           mysql -u root -e 'SELECT VERSION()'
           mysql -u root -e 'SHOW VARIABLES LIKE "have_ssl"'
 
-      # 8) Cria o usuário e concede privilégios
-      - name: Configure MySQL User
+      - name: Configure test user
         run: |
           mysql -u root -e "CREATE USER IF NOT EXISTS 'dart'@'%' IDENTIFIED BY 'dart';"
           mysql -u root -e "GRANT ALL PRIVILEGES ON *.* TO 'dart'@'%' WITH GRANT OPTION;"
           mysql -u root -e "FLUSH PRIVILEGES;"
 
-      # 9) Instala o Dart SDK
       - name: Setup Dart SDK
-        uses: dart-lang/setup-dart@v1.3
+        uses: dart-lang/setup-dart@v1
         with:
           sdk: ${{ matrix.sdk }}
 
-      # 10) Instala as dependências do Dart
-      - name: Install Dart Dependencies
+      - name: Install Dart dependencies
         run: dart pub get
 
-      # 11) Roda os testes
-      - name: Run Dart Tests
+      - name: Run Dart tests on MariaDB ${{ matrix.mariadb-version }}
         env:
           MYSQL_HOST: 127.0.0.1
           MYSQL_PORT: 3306
@@ -113,15 +103,18 @@ jobs:
           MYSQL_SECURE: "true"
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm
 
-  mysql-97:
+  mysql:
+    name: MySQL ${{ matrix.mysql-version }} (${{ matrix.sdk }})
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false
       matrix:
         sdk: [3.6.0]
+        mysql-version: ['9', '9.7']
 
     services:
       mysql:
-        image: mysql:9.7
+        image: mysql:${{ matrix.mysql-version }}
         env:
           MYSQL_ROOT_PASSWORD: dart
           MYSQL_DATABASE: banco_teste
@@ -137,17 +130,17 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Setup Dart SDK
-        uses: dart-lang/setup-dart@v1.3
+        uses: dart-lang/setup-dart@v1
         with:
           sdk: ${{ matrix.sdk }}
 
-      - name: Install Dart Dependencies
+      - name: Install Dart dependencies
         run: dart pub get
 
-      - name: Run Dart Tests on MySQL 9.7
+      - name: Run Dart tests on MySQL ${{ matrix.mysql-version }}
         env:
           MYSQL_HOST: 127.0.0.1
           MYSQL_PORT: 3307
