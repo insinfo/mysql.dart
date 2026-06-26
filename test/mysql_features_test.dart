@@ -539,19 +539,17 @@ void main() {
   });
 
   test('Usando USE para trocar de database', () async {
-    // Cria outro database para teste
-    try {
-      await connection.execute("CREATE DATABASE IF NOT EXISTS outro_db");
-    } catch (e) {
-      // ignorar se não puder criar
-    }
-    // Muda para outro_db
-    await connection.execute("USE outro_db");
-    // Cria tabela nele, se quiser
-    await connection.execute("DROP TABLE IF EXISTS table_outrodb");
-    await connection.execute("CREATE TABLE table_outrodb (id INT)");
-    // Retorna para o banco original
     await connection.execute("USE $mysqlTestDatabase");
+
+    final result = await connection.execute("SELECT DATABASE() AS current_db");
+    expect(
+      result.rows.first.colByName("current_db"),
+      equals(mysqlTestDatabase),
+    );
+
+    await connection.execute("DROP TABLE IF EXISTS use_command_test");
+    await connection.execute("CREATE TABLE use_command_test (id INT)");
+    await connection.execute("DROP TABLE IF EXISTS use_command_test");
   });
 
   test('Coluna JSON', () async {

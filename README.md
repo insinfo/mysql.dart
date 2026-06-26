@@ -14,8 +14,17 @@ See [example](example/) directory for examples and usage
 
 Tested with:
  * MySQL Percona Server 5.7 and 8 versions
+ * MySQL Community Server 9 and 9.7
  * MariaDB 10 version
  * MariaDB 11.7.2 version
+
+### What's New in 1.3.0
+
+- Added compatibility with MySQL Community Server 9 and 9.7, including full `caching_sha2_password` authentication with TLS, pinned RSA public keys, or optional server public key retrieval.
+- Added binary protocol support for MySQL JSON columns (`column type 245`), decoding them as UTF-8 JSON strings instead of failing at the protocol layer.
+- Integration tests now read `MYSQL_*` environment variables, so the suite can run against arbitrary local or CI host/port/database configurations.
+- GitHub Actions now runs the test suite against MySQL 9.7 in addition to the existing database coverage.
+- Removed external runtime dependencies on `asn1lib`, `pointycastle`, `buffer`, `crypto`, and `tuple` by inlining the required PEM/RSA/OAEP, hashing, tuple, and byte-writer logic.
 
 ### Roadmap
 
