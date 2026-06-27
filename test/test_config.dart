@@ -16,6 +16,9 @@ String get mysqlTestDatabase =>
 bool get mysqlTestSecure =>
     _parseBool(Platform.environment['MYSQL_SECURE'], defaultValue: true);
 
+String? get mysqlRestartCommand =>
+    Platform.environment['MYSQL_RESTART_COMMAND'];
+
 bool _parseBool(String? value, {required bool defaultValue}) {
   if (value == null || value.isEmpty) {
     return defaultValue;

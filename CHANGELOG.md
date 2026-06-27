@@ -4,8 +4,10 @@
 - perf: `COM_STMT_EXECUTE` can now encode directly into a complete MySQL packet with a precomputed buffer, avoiding the generic `MySQLPacket` + `ByteDataWriter` path for prepared-statement execution
 - perf: `typedAssoc()` now avoids reparsing values that already arrived as typed Dart values, reducing overhead for PDO-style integrations such as Eloquent that materialize every row as a typed map
 - fix: cleaned up Dart 3 analyzer diagnostics in connection/auth and exception code paths without changing public exception formatting
+- fix: the connection pool now validates connections after operation errors and retires broken sockets instead of returning them to the idle queue, improving recovery after database restarts
 - test: added protocol unit coverage for direct `COM_STMT_EXECUTE` packet encoding, null bitmaps, variable-length values, temporal values, and exception formatting
 - test: added real database integration coverage for prepared-statement binary result decoding with JSON payloads and BLOB bytes
+- test: added an opt-in destructive pool restart test controlled by `MYSQL_RESTART_COMMAND`, allowing local validation against a real MySQL/MariaDB service restart under load
 - docs: expanded the performance roadmap with Dart SDK baseline planning and architectural ideas from `dpgsql`/Npgsql for pool, data source, telemetry, retries, and auto-prepare evolution
 
 ## 2.0.0

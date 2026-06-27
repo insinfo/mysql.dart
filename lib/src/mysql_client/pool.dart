@@ -155,15 +155,7 @@ class MySQLConnectionPool {
       );
     }
 
-    final pooled = await _getFreeConnection();
-    try {
-      final result = await pooled.connection.execute(query, params, iterable);
-      await _releaseConnection(pooled);
-      return result;
-    } catch (e) {
-      await _releaseConnection(pooled, hadError: true);
-      rethrow;
-    }
+    return withConnection((conn) => conn.execute(query, params, iterable));
   }
 
   /// Closes all connections in this pool and frees resources
@@ -309,6 +301,12 @@ class MySQLConnectionPool {
       pooled.errorCount++;
     }
 
+    if (hadError && !await _canReuseAfterError(pooled)) {
+      await _retireConnection(pooled);
+      _wakeNextWaiter();
+      return;
+    }
+
     if (_shouldRecycle(pooled)) {
       await _retireConnection(pooled);
       _wakeNextWaiter();
@@ -359,6 +357,10 @@ class MySQLConnectionPool {
   }
 
   Future<bool> _ensureConnectionHealthy(_PooledConnection pooled) async {
+    if (!pooled.connection.connected) {
+      return false;
+    }
+
     if (_shouldRecycle(pooled)) {
       return false;
     }
@@ -375,12 +377,33 @@ class MySQLConnectionPool {
     return true;
   }
 
+  Future<bool> _canReuseAfterError(_PooledConnection pooled) async {
+    if (!pooled.connection.connected) {
+      return false;
+    }
+
+    try {
+      await pooled.connection
+          .execute('SELECT 1')
+          .timeout(Duration(milliseconds: timeoutMs));
+      pooled.lastUsed = DateTime.now();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _retireConnection(_PooledConnection pooled) async {
     _idleConnections.remove(pooled);
     _activeConnections.remove(pooled);
     try {
-      await pooled.connection.close();
+      if (pooled.connection.connected) {
+        await pooled.connection
+            .close()
+            .timeout(Duration(milliseconds: timeoutMs));
+      }
     } catch (_) {}
+    pooled.connection.getSocket().destroy();
   }
 
   void _wakeNextWaiter() {

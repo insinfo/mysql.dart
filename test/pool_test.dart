@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
@@ -355,6 +356,152 @@ void main() {
       await tempPool.close();
     }
   });
+
+  test('descarta conexão fechada enquanto estava emprestada', () async {
+    final tempPool = MySQLConnectionPool(
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      maxConnections: 1,
+      secure: mysqlTestSecure,
+      idleTestThreshold: const Duration(hours: 1),
+      timeoutMs: 500,
+    );
+
+    try {
+      final firstConnectionId = await tempPool.withConnection((conn) async {
+        final res = await conn.execute('SELECT CONNECTION_ID() AS cid');
+        return res.rows.first.colByName('cid');
+      });
+      expect(tempPool.idleConnectionsQty, equals(1));
+
+      await expectLater(
+        () => tempPool.withConnection((conn) async {
+          conn.getSocket().destroy();
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          throw const SocketException('simulated database restart');
+        }),
+        throwsA(isA<SocketException>()),
+      );
+
+      expect(tempPool.activeConnectionsQty, equals(0));
+      expect(tempPool.idleConnectionsQty, equals(0));
+
+      final secondConnectionId = await tempPool.withConnection((conn) async {
+        final res = await conn.execute('SELECT CONNECTION_ID() AS cid');
+        return res.rows.first.colByName('cid');
+      });
+
+      expect(secondConnectionId, isNot(equals(firstConnectionId)));
+      expect(tempPool.idleConnectionsQty, equals(1));
+    } finally {
+      await tempPool.close();
+    }
+  });
+
+  test(
+    'recupera após reinício real do servidor durante carga',
+    () async {
+      final restartCommand = mysqlRestartCommand!;
+      final restartPool = MySQLConnectionPool(
+        host: mysqlTestHost,
+        port: mysqlTestPort,
+        userName: mysqlTestUser,
+        password: mysqlTestPassword,
+        databaseName: mysqlTestDatabase,
+        maxConnections: 2,
+        secure: mysqlTestSecure,
+        idleTestThreshold: Duration.zero,
+        timeoutMs: 1000,
+        retryOptions: MySQLPoolRetryOptions(
+          maxAttempts: 20,
+          delay: const Duration(milliseconds: 250),
+          retryIf: (_) => true,
+        ),
+      );
+
+      var keepRunning = true;
+      final loadErrors = <Object>[];
+
+      Future<void> queryLoop() async {
+        while (keepRunning) {
+          try {
+            await restartPool.withConnection((conn) async {
+              await conn.execute('SELECT 1 AS ok');
+            });
+          } catch (error) {
+            loadErrors.add(error);
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+
+      try {
+        final warmup = await restartPool.withConnection((conn) async {
+          final res = await conn.execute('SELECT CONNECTION_ID() AS cid');
+          return res.rows.first.colByName('cid');
+        });
+        expect(warmup, isNotNull);
+
+        final load = List.generate(4, (_) => queryLoop());
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+
+        final restart = await Process.run(
+          'powershell',
+          [
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-Command',
+            restartCommand,
+          ],
+        ).timeout(const Duration(minutes: 2));
+
+        keepRunning = false;
+        await Future.wait(load);
+
+        expect(
+          restart.exitCode,
+          equals(0),
+          reason:
+              'MYSQL_RESTART_COMMAND failed.\nstdout: ${restart.stdout}\nstderr: ${restart.stderr}',
+        );
+
+        String? recoveredConnectionId;
+        final deadline = DateTime.now().add(const Duration(seconds: 30));
+        while (DateTime.now().isBefore(deadline)) {
+          try {
+            recoveredConnectionId =
+                await restartPool.withConnection((conn) async {
+              final res = await conn.execute('SELECT CONNECTION_ID() AS cid');
+              return res.rows.first.colByName('cid');
+            });
+            break;
+          } catch (_) {
+            await Future<void>.delayed(const Duration(milliseconds: 500));
+          }
+        }
+
+        expect(
+          recoveredConnectionId,
+          isNotNull,
+          reason:
+              'Pool did not recover after server restart. Load errors observed: ${loadErrors.length}',
+        );
+        expect(restartPool.activeConnectionsQty, equals(0));
+        expect(restartPool.allConnectionsQty, lessThanOrEqualTo(2));
+      } finally {
+        keepRunning = false;
+        await restartPool.close();
+      }
+    },
+    skip: mysqlRestartCommand == null || mysqlRestartCommand!.trim().isEmpty
+        ? 'Set MYSQL_RESTART_COMMAND to run this destructive integration test.'
+        : false,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 
   test('execute iterable via pool falha com mensagem explicativa', () async {
     await expectLater(
