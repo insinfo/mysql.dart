@@ -10,6 +10,23 @@ import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 import 'package:test/test.dart';
 
 void main() {
+  group('Exception formatting', () {
+    test('keeps stable prefixes after super parameter cleanup', () {
+      expect(
+        const MySQLClientException('client failed').toString(),
+        'MySQLClientException: client failed',
+      );
+      expect(
+        const MySQLProtocolException('bad packet').toString(),
+        'MySQLProtocolException: bad packet',
+      );
+      expect(
+        const MySQLServerException('syntax error', 1064).toString(),
+        'MySQLServerException [1064]: syntax error',
+      );
+    });
+  });
+
   group('Column utils', () {
     MySQLColumnDefinitionPacket blobColumn({
       required int charset,
@@ -489,6 +506,142 @@ void main() {
       expect(withoutTypes[11], 0);
       expect(withTypes.length, greaterThan(withoutTypes.length));
       expect(withoutTypes.sublist(withoutTypes.length - 2), [40, 2]);
+
+      final payload = MySQLPacketCommStmtExecute(
+        stmtID: 99,
+        params: [40, 2],
+        paramTypeCodes: Uint8List.fromList(
+          [mysqlColumnTypeTiny, mysqlColumnTypeTiny],
+        ),
+        sendTypes: false,
+      );
+      final wrapped = MySQLPacket(
+        sequenceID: 7,
+        payload: payload,
+        payloadLength: 0,
+      ).encode();
+
+      expect(payload.encodePacket(7), wrapped);
+    });
+
+    test('stmt execute packet encodes no-parameter statements directly', () {
+      final payload = MySQLPacketCommStmtExecute(
+        stmtID: 0x01020304,
+        params: const <dynamic>[],
+        paramTypeCodes: Uint8List(0),
+        sendTypes: false,
+      );
+
+      final encoded = payload.encodePacket(9);
+      final data = ByteData.sublistView(encoded);
+
+      expect(encoded, hasLength(14));
+      expect(encoded.sublist(0, 4), [10, 0, 0, 9]);
+      expect(encoded[4], 0x17);
+      expect(data.getUint32(5, Endian.little), 0x01020304);
+      expect(encoded[9], 0);
+      expect(data.getUint32(10, Endian.little), 1);
+      expect(payload.encode(), encoded.sublist(4));
+    });
+
+    test('stmt execute packet encodes null bitmap and variable values', () {
+      final payload = MySQLPacketCommStmtExecute(
+        stmtID: 7,
+        params: [
+          null,
+          'abc',
+          Uint8List.fromList([1, 2]),
+          true,
+        ],
+        paramTypeCodes: Uint8List.fromList([
+          mysqlColumnTypeNull,
+          mysqlColumnTypeVarString,
+          mysqlColumnTypeBlob,
+          mysqlColumnTypeTiny,
+        ]),
+        sendTypes: true,
+      );
+
+      final encoded = payload.encodePacket(4);
+      final data = ByteData.sublistView(encoded);
+
+      expect(encoded.sublist(0, 4), [28, 0, 0, 4]);
+      expect(encoded[4], 0x17);
+      expect(data.getUint32(5, Endian.little), 7);
+      expect(encoded[14], 0x01); // first parameter is NULL
+      expect(encoded[15], 1); // resend parameter types
+      expect(encoded.sublist(16, 24), [
+        mysqlColumnTypeNull,
+        0,
+        mysqlColumnTypeVarString,
+        0,
+        mysqlColumnTypeBlob,
+        0,
+        mysqlColumnTypeTiny,
+        0,
+      ]);
+      expect(encoded.sublist(24), [
+        3,
+        ...utf8.encode('abc'),
+        2,
+        1,
+        2,
+        1,
+      ]);
+    });
+
+    test('stmt execute packet encodes temporal values without ByteDataWriter',
+        () {
+      final payload = MySQLPacketCommStmtExecute(
+        stmtID: 11,
+        params: [
+          DateTime(2024, 5, 1),
+          DateTime(2024, 5, 1, 2, 3, 4, 5, 6),
+          DateTime(1, 1, 1, 7, 8, 9, 0, 12),
+        ],
+        paramTypeCodes: Uint8List.fromList([
+          mysqlColumnTypeDate,
+          mysqlColumnTypeDateTime,
+          mysqlColumnTypeTime,
+        ]),
+        sendTypes: true,
+      );
+
+      final encoded = payload.encodePacket(3);
+      final data = ByteData.sublistView(encoded);
+
+      expect(encoded.sublist(0, 4), [48, 0, 0, 3]);
+      expect(encoded[14], 0);
+      expect(encoded[15], 1);
+
+      var offset = 22;
+      expect(encoded[offset++], 4);
+      expect(data.getUint16(offset, Endian.little), 2024);
+      offset += 2;
+      expect(encoded[offset++], 5);
+      expect(encoded[offset++], 1);
+
+      expect(encoded[offset++], 11);
+      expect(data.getUint16(offset, Endian.little), 2024);
+      offset += 2;
+      expect(encoded[offset++], 5);
+      expect(encoded[offset++], 1);
+      expect(encoded[offset++], 2);
+      expect(encoded[offset++], 3);
+      expect(encoded[offset++], 4);
+      expect(data.getUint32(offset, Endian.little), 5006);
+      offset += 4;
+
+      expect(encoded[offset++], 12);
+      expect(encoded[offset++], 0);
+      expect(data.getUint32(offset, Endian.little), 0);
+      offset += 4;
+      expect(encoded[offset++], 7);
+      expect(encoded[offset++], 8);
+      expect(encoded[offset++], 9);
+      expect(data.getUint32(offset, Endian.little), 12);
+      offset += 4;
+      expect(offset, encoded.length);
     });
   });
 }

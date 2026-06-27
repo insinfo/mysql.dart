@@ -1,3 +1,13 @@
+## 3.0.0
+
+- breaking: raised the minimum Dart SDK to `^3.6.0`, aligning the package with the AOT benchmark baseline and allowing future hot-path refactors to use modern Dart features
+- perf: `COM_STMT_EXECUTE` can now encode directly into a complete MySQL packet with a precomputed buffer, avoiding the generic `MySQLPacket` + `ByteDataWriter` path for prepared-statement execution
+- perf: `typedAssoc()` now avoids reparsing values that already arrived as typed Dart values, reducing overhead for PDO-style integrations such as Eloquent that materialize every row as a typed map
+- fix: cleaned up Dart 3 analyzer diagnostics in connection/auth and exception code paths without changing public exception formatting
+- test: added protocol unit coverage for direct `COM_STMT_EXECUTE` packet encoding, null bitmaps, variable-length values, temporal values, and exception formatting
+- test: added real database integration coverage for prepared-statement binary result decoding with JSON payloads and BLOB bytes
+- docs: expanded the performance roadmap with Dart SDK baseline planning and architectural ideas from `dpgsql`/Npgsql for pool, data source, telemetry, retries, and auto-prepare evolution
+
 ## 2.0.0
 
 - feat: added compatibility with MySQL Community Server 9 and 9.7, including `caching_sha2_password` full authentication with TLS, pinned RSA public keys, or optional server public key retrieval

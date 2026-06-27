@@ -358,7 +358,7 @@ class MySQLConnection {
       final encryptedPassword = buildCachingSha2EncryptedPassword(
         _password,
         _authSeed!,
-        _serverPublicKey!,
+        _serverPublicKey,
       );
 
       final responsePacket = MySQLPacket(
@@ -1305,8 +1305,6 @@ class MySQLConnection {
 
     _state = _MySQLConnectionState.waitingCommandResponse;
 
-    await _flushDeferredStmtCloses();
-
     final paramTypeCodes = _determineParamTypeCodes(params);
     final sendTypes = stmt._shouldSendParamTypes(paramTypeCodes);
     final payload = MySQLPacketCommStmtExecute(
@@ -1316,12 +1314,6 @@ class MySQLConnection {
       sendTypes: sendTypes,
     );
     stmt._updateParamTypeCache(paramTypeCodes, sendTypes);
-
-    final packet = MySQLPacket(
-      sequenceID: 0,
-      payload: payload,
-      payloadLength: 0,
-    );
 
     final completer = Completer<IResultSet>();
 
@@ -1508,7 +1500,7 @@ class MySQLConnection {
       }
     };
 
-    _socket.add(packet.encode());
+    _socket.add(payload.encodePacket(0));
 
     return completer.future;
   }
@@ -2059,36 +2051,55 @@ class ResultSetRow {
 
       final dartType = bestMatchDartTypes[colIndex];
 
-      dynamic decodedValue;
-
-      switch (dartType) {
-        case int:
-          decodedValue = int.parse(value);
-          break;
-        case double:
-          decodedValue = double.parse(value);
-          break;
-        case num:
-          decodedValue = num.parse(value);
-          break;
-        case bool:
-          decodedValue = int.parse(value) > 0;
-          break;
-        case DateTime:
-          decodedValue = DateTime.parse(value);
-          break;
-        case String:
-          decodedValue = value;
-          break;
-        default:
-          decodedValue = value;
-          break;
-      }
-
-      result[columnName] = decodedValue;
+      result[columnName] = _convertTypedAssocValue(dartType, value);
     }
 
     return result;
+  }
+
+  dynamic _convertTypedAssocValue(Type dartType, dynamic value) {
+    if (identical(dartType, int)) {
+      if (value is int) {
+        return value;
+      }
+      return int.parse(value.toString());
+    }
+
+    if (identical(dartType, double)) {
+      if (value is double) {
+        return value;
+      }
+      if (value is num) {
+        return value.toDouble();
+      }
+      return double.parse(value.toString());
+    }
+
+    if (identical(dartType, num)) {
+      if (value is num) {
+        return value;
+      }
+      return num.parse(value.toString());
+    }
+
+    if (identical(dartType, bool)) {
+      if (value is bool) {
+        return value;
+      }
+      if (value is num) {
+        return value != 0;
+      }
+      return int.parse(value.toString()) > 0;
+    }
+
+    if (identical(dartType, DateTime)) {
+      if (value is DateTime) {
+        return value;
+      }
+      return DateTime.parse(value.toString());
+    }
+
+    return value;
   }
 }
 

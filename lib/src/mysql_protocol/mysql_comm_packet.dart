@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
-import 'package:mysql_dart/mysql_protocol_extension.dart';
 import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 /// Representa o comando INIT DB no protocolo MySQL.
@@ -145,113 +144,126 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
   ///    - Para cada parâmetro: 2 bytes (tipo e flags de unsigned, etc.).
   ///    - Para cada parâmetro não-nulo: o valor, no formato binário correspondente ao tipo.
   @override
-  Uint8List encode() {
-    final buffer = ByteDataWriter(endian: Endian.little);
+  Uint8List encode() => _encode(0, 0);
 
-    // Escreve o comando COM_STMT_EXECUTE (0x17)
-    buffer.writeUint8(0x17);
-    // Escreve o ID do statement (4 bytes, little-endian)
-    buffer.writeUint32(stmtID, Endian.little);
-    // Escreve flags (1 byte, atualmente 0)
-    buffer.writeUint8(0);
-    // Escreve o contador de iterações (4 bytes, sempre 1, little-endian)
-    buffer.writeUint32(1, Endian.little);
+  Uint8List encodePacket(int sequenceID) => _encode(4, sequenceID);
 
-    // Só se há parâmetros
-    if (params.isNotEmpty) {
-      // Cria o null-bitmap para identificar quais parâmetros são nulos.
-      final bitmapSize = ((params.length + 7) ~/ 8);
-      final nullBitmap = Uint8List(bitmapSize);
+  Uint8List _encode(int packetHeaderSize, int sequenceID) {
+    final paramCount = params.length;
+    if (paramCount == 0) {
+      final out = Uint8List(packetHeaderSize + 10);
+      final data = out.buffer.asByteData();
+      _writePacketHeader(out, packetHeaderSize, sequenceID, 10);
+      final base = packetHeaderSize;
+      out[base] = 0x17;
+      data.setUint32(base + 1, stmtID, Endian.little);
+      out[base + 5] = 0;
+      data.setUint32(base + 6, 1, Endian.little);
+      return out;
+    }
 
-      // Define os bits no null-bitmap para os parâmetros nulos.
-      for (int paramIndex = 0; paramIndex < params.length; paramIndex++) {
-        if (params[paramIndex] == null) {
-          final paramByteIndex = paramIndex ~/ 8;
-          final paramBitIndex = paramIndex % 8;
-          nullBitmap[paramByteIndex] |= (1 << paramBitIndex);
-        }
-      }
-      // Escreve o null-bitmap no buffer
-      buffer.write(nullBitmap);
+    final bitmapSize = ((paramCount + 7) ~/ 8);
+    final encodedValues = _hasVariableLengthParam(paramTypeCodes)
+        ? List<List<int>?>.filled(paramCount, null)
+        : null;
+    var payloadLength = 10 + bitmapSize + 1 + (sendTypes ? paramCount * 2 : 0);
 
-      // Escreve o new-param-bound flag.
-      buffer.writeUint8(sendTypes ? 1 : 0);
-
-      // Escreve os tipos dos parâmetros (2 bytes por parâmetro) apenas quando necessário.
-      if (sendTypes) {
-        for (int i = 0; i < params.length; i++) {
-          buffer.writeUint8(paramTypeCodes[i]);
-          buffer.writeUint8(0);
-        }
+    for (var i = 0; i < paramCount; i++) {
+      final param = params[i];
+      if (param == null) {
+        continue;
       }
 
-      // Escreve os valores dos parâmetros não-nulos
-      for (int i = 0; i < params.length; i++) {
-        final param = params[i];
-        if (param != null) {
-          final paramType = MySQLColumnType.create(paramTypeCodes[i]);
-          _writeParamValue(buffer, param, paramType);
-        }
+      payloadLength += _encodedParamLength(
+        param,
+        paramTypeCodes[i],
+        encodedValues,
+        i,
+      );
+    }
+
+    final out = Uint8List(packetHeaderSize + payloadLength);
+    final data = out.buffer.asByteData();
+    _writePacketHeader(out, packetHeaderSize, sequenceID, payloadLength);
+    final base = packetHeaderSize;
+    out[base] = 0x17;
+    data.setUint32(base + 1, stmtID, Endian.little);
+    out[base + 5] = 0;
+    data.setUint32(base + 6, 1, Endian.little);
+
+    var offset = base + 10;
+    for (var i = 0; i < paramCount; i++) {
+      if (params[i] == null) {
+        out[offset + (i ~/ 8)] |= 1 << (i % 8);
+      }
+    }
+    offset += bitmapSize;
+
+    out[offset++] = sendTypes ? 1 : 0;
+    if (sendTypes) {
+      for (var i = 0; i < paramCount; i++) {
+        out[offset++] = paramTypeCodes[i];
+        out[offset++] = 0;
       }
     }
 
-    return buffer.toBytes();
+    for (var i = 0; i < paramCount; i++) {
+      final param = params[i];
+      if (param != null) {
+        offset = _writeEncodedParamValue(
+          out,
+          data,
+          offset,
+          param,
+          paramTypeCodes[i],
+          encodedValues?[i],
+        );
+      }
+    }
+
+    return out;
   }
 
-  /// Escreve o valor do parâmetro no [buffer] de acordo com seu [type].
-  ///
-  /// Para cada tipo, o valor é convertido e escrito no formato binário adequado:
-  /// - Tipos numéricos e booleanos são escritos em seus respectivos tamanhos.
-  /// - Datas e horários são escritos com formatação especial.
-  /// - Strings (ou BLOBs) são enviados como length-encoded (primeiro o tamanho, depois o conteúdo).
-  void _writeParamValue(
-    ByteDataWriter buffer,
-    dynamic param,
-    MySQLColumnType type,
+  void _writePacketHeader(
+    Uint8List out,
+    int packetHeaderSize,
+    int sequenceID,
+    int payloadLength,
   ) {
-    switch (type.intVal) {
-      case mysqlColumnTypeTiny: // 1 byte
-        // Se o parâmetro for booleano, converte para 1 ou 0. Caso contrário, assume int 1 byte.
-        if (param is bool) {
-          buffer.writeUint8(param ? 1 : 0);
-        } else {
-          // Se param for int, convertendo para 8 bits (pode estourar se for >127).
-          buffer.writeInt8(param);
-        }
-        break;
+    if (packetHeaderSize == 0) {
+      return;
+    }
 
-      case mysqlColumnTypeShort: // 2 bytes (int16)
-        buffer.writeInt16(param, Endian.little);
-        break;
+    out[0] = payloadLength & 0xff;
+    out[1] = (payloadLength >> 8) & 0xff;
+    out[2] = (payloadLength >> 16) & 0xff;
+    out[3] = sequenceID;
+  }
 
-      case mysqlColumnTypeLong: // 4 bytes (int32)
-      case mysqlColumnTypeInt24: // no MySQL, 24 bits, mas normalmente tratamos c/ 32 bits
-        buffer.writeInt32(param, Endian.little);
-        break;
-
-      case mysqlColumnTypeLongLong: // 8 bytes (int64)
-        buffer.writeInt64(param, Endian.little);
-        break;
-
-      case mysqlColumnTypeFloat: // 4 bytes float
-        buffer.writeFloat32(param, Endian.little);
-        break;
-
-      case mysqlColumnTypeDouble: // 8 bytes double
-        buffer.writeFloat64(param, Endian.little);
-        break;
-
+  int _encodedParamLength(
+    dynamic param,
+    int typeCode,
+    List<List<int>?>? encodedValues,
+    int paramIndex,
+  ) {
+    switch (typeCode) {
+      case mysqlColumnTypeTiny:
+        return 1;
+      case mysqlColumnTypeShort:
+        return 2;
+      case mysqlColumnTypeLong:
+      case mysqlColumnTypeInt24:
+      case mysqlColumnTypeFloat:
+        return 4;
+      case mysqlColumnTypeLongLong:
+      case mysqlColumnTypeDouble:
+        return 8;
       case mysqlColumnTypeDate:
       case mysqlColumnTypeDateTime:
       case mysqlColumnTypeTimestamp:
-        _writeDateTime(buffer, param);
-        break;
-
+        return _encodedDateTimeLength(param);
       case mysqlColumnTypeTime:
-        _writeTime(buffer, param);
-        break;
-
-      // Strings, BLOBs, DECIMALS etc. → length encoded + bytes
+        return _encodedTimeLength(param);
       case mysqlColumnTypeString:
       case mysqlColumnTypeVarString:
       case mysqlColumnTypeVarChar:
@@ -265,30 +277,138 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       case mysqlColumnTypeBit:
       case mysqlColumnTypeDecimal:
       case mysqlColumnTypeNewDecimal:
-        {
-          // Se o parâmetro for Uint8List, manda-o como binário; caso contrário, converte para string UTF-8
-          final encodedData =
-              (param is Uint8List) ? param : utf8.encode(param.toString());
-
-          // Primeiro escreve o tamanho (length-encoded)
-          buffer.writeVariableEncInt(encodedData.length);
-          // Depois escreve os bytes
-          buffer.write(encodedData);
-        }
-        break;
-
+        final encoded =
+            param is Uint8List ? param : utf8.encode(param.toString());
+        encodedValues![paramIndex] = encoded;
+        return _lengthEncodedIntSize(encoded.length) + encoded.length;
       default:
         throw MySQLProtocolException(
-          "Unsupported parameter type: ${type.intVal}",
+          "Unsupported parameter type: $typeCode",
         );
     }
   }
 
-  /// Escreve um valor do tipo DateTime [dateTime] no [buffer] de acordo com o protocolo MySQL.
-  ///
-  /// Dependendo dos valores de ano, mês, dia, hora, minuto, segundo e microssegundos,
-  /// o método escolhe um formato de 4, 7 ou 11 bytes.
-  void _writeDateTime(ByteDataWriter buffer, DateTime dateTime) {
+  bool _hasVariableLengthParam(Uint8List typeCodes) {
+    for (var i = 0; i < typeCodes.length; i++) {
+      switch (typeCodes[i]) {
+        case mysqlColumnTypeString:
+        case mysqlColumnTypeVarString:
+        case mysqlColumnTypeVarChar:
+        case mysqlColumnTypeEnum:
+        case mysqlColumnTypeSet:
+        case mysqlColumnTypeLongBlob:
+        case mysqlColumnTypeMediumBlob:
+        case mysqlColumnTypeBlob:
+        case mysqlColumnTypeTinyBlob:
+        case mysqlColumnTypeGeometry:
+        case mysqlColumnTypeBit:
+        case mysqlColumnTypeDecimal:
+        case mysqlColumnTypeNewDecimal:
+          return true;
+      }
+    }
+
+    return false;
+  }
+
+  int _writeEncodedParamValue(
+    Uint8List out,
+    ByteData data,
+    int offset,
+    dynamic param,
+    int typeCode,
+    List<int>? encodedValue,
+  ) {
+    switch (typeCode) {
+      case mysqlColumnTypeTiny:
+        out[offset] = param is bool ? (param ? 1 : 0) : (param as int) & 0xff;
+        return offset + 1;
+      case mysqlColumnTypeShort:
+        data.setInt16(offset, param as int, Endian.little);
+        return offset + 2;
+      case mysqlColumnTypeLong:
+      case mysqlColumnTypeInt24:
+        data.setInt32(offset, param as int, Endian.little);
+        return offset + 4;
+      case mysqlColumnTypeLongLong:
+        data.setInt64(offset, param as int, Endian.little);
+        return offset + 8;
+      case mysqlColumnTypeFloat:
+        data.setFloat32(offset, param as double, Endian.little);
+        return offset + 4;
+      case mysqlColumnTypeDouble:
+        data.setFloat64(offset, param as double, Endian.little);
+        return offset + 8;
+      case mysqlColumnTypeDate:
+      case mysqlColumnTypeDateTime:
+      case mysqlColumnTypeTimestamp:
+        return _writeDateTimeTo(out, data, offset, param as DateTime);
+      case mysqlColumnTypeTime:
+        return _writeTimeTo(out, data, offset, param as DateTime);
+      case mysqlColumnTypeString:
+      case mysqlColumnTypeVarString:
+      case mysqlColumnTypeVarChar:
+      case mysqlColumnTypeEnum:
+      case mysqlColumnTypeSet:
+      case mysqlColumnTypeLongBlob:
+      case mysqlColumnTypeMediumBlob:
+      case mysqlColumnTypeBlob:
+      case mysqlColumnTypeTinyBlob:
+      case mysqlColumnTypeGeometry:
+      case mysqlColumnTypeBit:
+      case mysqlColumnTypeDecimal:
+      case mysqlColumnTypeNewDecimal:
+        final encoded = encodedValue!;
+        offset = _writeLengthEncodedInt(out, data, offset, encoded.length);
+        out.setRange(offset, offset + encoded.length, encoded);
+        return offset + encoded.length;
+      default:
+        throw MySQLProtocolException(
+          "Unsupported parameter type: $typeCode",
+        );
+    }
+  }
+
+  int _encodedDateTimeLength(DateTime dateTime) {
+    if (dateTime.year == 0 &&
+        dateTime.month == 0 &&
+        dateTime.day == 0 &&
+        dateTime.hour == 0 &&
+        dateTime.minute == 0 &&
+        dateTime.second == 0 &&
+        dateTime.millisecond == 0 &&
+        dateTime.microsecond == 0) {
+      return 1;
+    }
+
+    if (dateTime.millisecond > 0 || dateTime.microsecond > 0) {
+      return 12;
+    }
+
+    if (dateTime.hour > 0 || dateTime.minute > 0 || dateTime.second > 0) {
+      return 8;
+    }
+
+    return 5;
+  }
+
+  int _encodedTimeLength(DateTime time) {
+    if (time.hour == 0 &&
+        time.minute == 0 &&
+        time.second == 0 &&
+        time.microsecond == 0) {
+      return 1;
+    }
+
+    return time.microsecond > 0 ? 13 : 9;
+  }
+
+  int _writeDateTimeTo(
+    Uint8List out,
+    ByteData data,
+    int offset,
+    DateTime dateTime,
+  ) {
     final year = dateTime.year;
     final month = dateTime.month;
     final day = dateTime.day;
@@ -298,7 +418,6 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
     final millisecond = dateTime.millisecond;
     final microsecond = dateTime.microsecond;
 
-    // Caso todos os valores sejam zero, escreve 0 (sem dados de data/hora).
     if (year == 0 &&
         month == 0 &&
         day == 0 &&
@@ -307,82 +426,122 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
         second == 0 &&
         millisecond == 0 &&
         microsecond == 0) {
-      buffer.writeUint8(0);
-      return;
+      out[offset] = 0;
+      return offset + 1;
     }
 
     if (millisecond > 0 || microsecond > 0) {
-      // 11 bytes: 1 de comprimento, 2 para ano, 1 p/ mês, 1 p/ dia,
-      // 1 p/ hora, 1 p/ min, 1 p/ seg, 4 p/ microsegundos
-      buffer.writeUint8(11);
-      buffer.writeUint16(year, Endian.little);
-      buffer.writeUint8(month);
-      buffer.writeUint8(day);
-      buffer.writeUint8(hour);
-      buffer.writeUint8(minute);
-      buffer.writeUint8(second);
-      buffer.writeUint32(microsecond + millisecond * 1000, Endian.little);
-    } else if (hour > 0 || minute > 0 || second > 0) {
-      // 7 bytes: 1 de comprimento, 2 p/ ano, 1 p/ mês, 1 p/ dia,
-      // 1 p/ hora, 1 p/ min, 1 p/ seg
-      buffer.writeUint8(7);
-      buffer.writeUint16(year, Endian.little);
-      buffer.writeUint8(month);
-      buffer.writeUint8(day);
-      buffer.writeUint8(hour);
-      buffer.writeUint8(minute);
-      buffer.writeUint8(second);
-    } else {
-      // 4 bytes: 1 de comprimento, 2 p/ ano, 1 p/ mês, 1 p/ dia
-      buffer.writeUint8(4);
-      buffer.writeUint16(year, Endian.little);
-      buffer.writeUint8(month);
-      buffer.writeUint8(day);
+      out[offset++] = 11;
+      data.setUint16(offset, year, Endian.little);
+      offset += 2;
+      out[offset++] = month;
+      out[offset++] = day;
+      out[offset++] = hour;
+      out[offset++] = minute;
+      out[offset++] = second;
+      data.setUint32(offset, microsecond + millisecond * 1000, Endian.little);
+      return offset + 4;
     }
+
+    if (hour > 0 || minute > 0 || second > 0) {
+      out[offset++] = 7;
+      data.setUint16(offset, year, Endian.little);
+      offset += 2;
+      out[offset++] = month;
+      out[offset++] = day;
+      out[offset++] = hour;
+      out[offset++] = minute;
+      out[offset++] = second;
+      return offset;
+    }
+
+    out[offset++] = 4;
+    data.setUint16(offset, year, Endian.little);
+    offset += 2;
+    out[offset++] = month;
+    out[offset++] = day;
+    return offset;
   }
 
-  /// Escreve um valor do tipo Time (representado como DateTime) no [buffer]
-  /// de acordo com o protocolo MySQL.
-  ///
-  /// O protocolo binário do MySQL para TIME armazena:
-  /// - 1 byte de "tamanho" (pode ser 0, 8 ou 12).
-  /// - 1 byte de sinal (0=positivo, 1=negativo).
-  /// - 4 bytes p/ "dias".
-  /// - 1 hora, 1 min, 1 seg [=3 bytes].
-  /// - Opcionalmente 4 bytes de microssegundos, se houver.
-  ///
-  /// Aqui, interpretamos [time] como um DateTime cujo dia/hora/min/seg representam
-  /// apenas a parte de tempo (ex.: 00:00 até 23:59:59).
-  void _writeTime(ByteDataWriter buffer, DateTime time) {
+  int _writeTimeTo(
+    Uint8List out,
+    ByteData data,
+    int offset,
+    DateTime time,
+  ) {
     final hour = time.hour;
     final minute = time.minute;
     final second = time.second;
     final microsecond = time.microsecond;
 
-    // Se tudo zero, escreve 0 (tempo = 00:00:00).
     if (hour == 0 && minute == 0 && second == 0 && microsecond == 0) {
-      buffer.writeUint8(0);
-      return;
+      out[offset] = 0;
+      return offset + 1;
     }
 
     if (microsecond > 0) {
-      // 12 bytes: 1 (len) + 1 (sinal) + 4 (dias=0) + 1 (hora) + 1 (min) + 1 (seg) + 4 (microseg)
-      buffer.writeUint8(12);
-      buffer.writeUint8(0); // sinal = 0 (positivo)
-      buffer.writeUint32(0, Endian.little); // dias = 0
-      buffer.writeUint8(hour);
-      buffer.writeUint8(minute);
-      buffer.writeUint8(second);
-      buffer.writeUint32(microsecond, Endian.little);
-    } else {
-      // 8 bytes: 1 (len) + 1 (sinal) + 4 (dias=0) + 1 (hora) + 1 (min) + 1 (seg)
-      buffer.writeUint8(8);
-      buffer.writeUint8(0); // sinal = 0 (positivo)
-      buffer.writeUint32(0, Endian.little); // dias = 0
-      buffer.writeUint8(hour);
-      buffer.writeUint8(minute);
-      buffer.writeUint8(second);
+      out[offset++] = 12;
+      out[offset++] = 0;
+      data.setUint32(offset, 0, Endian.little);
+      offset += 4;
+      out[offset++] = hour;
+      out[offset++] = minute;
+      out[offset++] = second;
+      data.setUint32(offset, microsecond, Endian.little);
+      return offset + 4;
     }
+
+    out[offset++] = 8;
+    out[offset++] = 0;
+    data.setUint32(offset, 0, Endian.little);
+    offset += 4;
+    out[offset++] = hour;
+    out[offset++] = minute;
+    out[offset++] = second;
+    return offset;
+  }
+
+  int _lengthEncodedIntSize(int value) {
+    if (value < 0xfb) {
+      return 1;
+    }
+    if (value <= 0xffff) {
+      return 3;
+    }
+    if (value <= 0xffffff) {
+      return 4;
+    }
+    return 9;
+  }
+
+  int _writeLengthEncodedInt(
+    Uint8List out,
+    ByteData data,
+    int offset,
+    int value,
+  ) {
+    if (value < 0xfb) {
+      out[offset] = value;
+      return offset + 1;
+    }
+
+    if (value <= 0xffff) {
+      out[offset] = 0xfc;
+      data.setUint16(offset + 1, value, Endian.little);
+      return offset + 3;
+    }
+
+    if (value <= 0xffffff) {
+      out[offset] = 0xfd;
+      out[offset + 1] = value & 0xff;
+      out[offset + 2] = (value >> 8) & 0xff;
+      out[offset + 3] = (value >> 16) & 0xff;
+      return offset + 4;
+    }
+
+    out[offset] = 0xfe;
+    data.setUint64(offset + 1, value, Endian.little);
+    return offset + 9;
   }
 }
 

@@ -19,7 +19,7 @@ class MySQLServerException extends MySQLException {
   /// MySQL server error code
   final int errorCode;
 
-  const MySQLServerException(String message, this.errorCode) : super(message);
+  const MySQLServerException(super.message, this.errorCode);
 
   @override
   String toString() {
@@ -34,7 +34,7 @@ class MySQLServerException extends MySQLException {
 ///
 /// Extends [MySQLException]
 class MySQLClientException extends MySQLException {
-  const MySQLClientException(String message) : super(message);
+  const MySQLClientException(super.message);
 
   @override
   String get _prefix => 'MySQLClientException';
@@ -44,7 +44,7 @@ class MySQLClientException extends MySQLException {
 ///
 /// Extends [MySQLClientException]
 class MySQLProtocolException extends MySQLClientException {
-  const MySQLProtocolException(String message) : super(message);
+  const MySQLProtocolException(super.message);
 
   @override
   String get _prefix => 'MySQLProtocolException';

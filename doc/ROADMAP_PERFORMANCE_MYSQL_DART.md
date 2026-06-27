@@ -69,6 +69,87 @@
 2. Refinar a medicao de memoria/alocacoes alem do RSS bruto, idealmente com perfil de heap por workload.
 3. Revisar o auto-cache de prepared statements sob carga prolongada, variando `autoPreparedStatementCacheCapacity` e o tamanho do hot set.
 4. Explorar novas reducoes de custo em decode/materializacao por coluna e por linha.
+5. Avaliar a elevacao do SDK minimo de `>=2.16.0 <4.0.0` para `>=3.6.0 <4.0.0` em uma proxima versao, para alinhar o pacote ao baseline real dos benchmarks AOT e liberar refatoracoes modernas no caminho quente.
+
+### Baseline de SDK para a proxima versao
+
+A versao `2.0.0` ja foi publicada mantendo o range atual de SDK. Para a proxima linha de evolucao, vale planejar a troca de:
+
+```yaml
+environment:
+  sdk: '>=2.16.0 <4.0.0'
+```
+
+para:
+
+```yaml
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+```
+
+Essa mudanca nao melhora a performance automaticamente. O codigo ja roda com as otimizacoes da VM/AOT do Dart instalado pelo usuario mesmo quando o `pubspec.yaml` aceita Dart `2.16`. O ganho esperado e indireto: permitir que o driver use recursos modernos do Dart no hot path e simplifique codigo que hoje existe para manter compatibilidade ampla.
+
+Beneficios esperados:
+
+- usar `records` ou estruturas equivalentes para substituir retornos auxiliares como `Tuple2` em leitores internos;
+- avaliar `extension types` para wrappers leves de cursor, offsets, metadados e planos de decode;
+- reduzir codigo defensivo legado e alinhar CI, benchmarks e suporte oficial ao Dart usado nos testes AOT;
+- facilitar planos de encoding/decoding mais especializados sem carregar compatibilidade antiga no caminho quente;
+- manter a documentacao de performance vinculada ao mesmo SDK que produz os numeros publicados.
+
+Cuidados:
+
+- elevar o SDK minimo e uma quebra para usuarios ainda presos em Dart `2.x`;
+- se a politica de semver for estrita, essa mudanca deve ser tratada como breaking e pode justificar uma futura linha `3.0.0`;
+- se for feita em `2.1.x`, documentar explicitamente que o pacote passa a exigir Dart `3.6+`;
+- nao vender a troca do constraint como otimizacao isolada; ela so gera ganho quando vier acompanhada de refatoracoes medidas no parser, no `COM_STMT_EXECUTE`, nos wrappers de row e no streaming.
+
+### Ideias de outras bases de codigo
+
+As referencias em `C:\MyDartProjects\dpgsql` e `C:\MyDartProjects\dpgsql\referencias\npgsql` trazem ideias uteis para o `mysql_dart`, principalmente no desenho de pool, observabilidade e ciclo de vida de conexao. Essas ideias devem ser usadas como referencia arquitetural e reimplementadas de forma propria para MySQL; nao devem ser copiadas mecanicamente, porque o protocolo, licenca, linguagem e modelo de execucao sao diferentes.
+
+#### dpgsql: pool orientado a sessao
+
+O trecho analisado do `dpgsql` mostra um `PgPool` com endpoint configuravel, configuracoes centralizadas, execucao por sessao e eventos estruturados. Ideias aplicaveis ao `mysql_dart`:
+
+- criar uma camada de configuracao de endpoint/pool mais coesa, separando host, porta, database, TLS, usuario, senha, unix socket e parametros de inicializacao;
+- oferecer parse de connection URL MySQL, por exemplo `mysql://user:pass@host:port/db?sslmode=require`, sem substituir a API atual por construtores manuais;
+- expor eventos opcionais de pool/conexao/query com `connectionId`, `sessionId`, `traceId`, acao, SQL, parametros mascaraveis, duracao, erro e stack trace;
+- manter `status()` mais rico, incluindo conexoes abertas, ociosas, ocupadas, idade, contagem de queries, erros, fila e tempo acumulado de uso;
+- reciclar conexoes por `maxConnectionAge`, `maxSessionUse`, `maxErrorCount` e `maxQueryCount`, nao apenas por idle/erro;
+- testar conexoes ociosas somente apos `idleTestThreshold`, evitando `PING` em toda aquisicao;
+- garantir que apenas uma abertura fisica de conexao seja iniciada quando varias chamadas concorrentes tentam expandir o pool ao mesmo tempo;
+- padronizar `withConnection`/`withPrepared` como unidade de sessao: a conexao fica emprestada ate a callback terminar e nunca vaza objetos presos a conexao para fora do ciclo de vida correto;
+- centralizar retry com backoff, jitter e predicado por erro, mantendo retries fora de transacoes ou usando regras conservadoras para nao repetir operacoes nao idempotentes;
+- incluir hook `onOpen`/`onConnectionOpen` com medicao separada, para diferenciar custo de handshake, autenticacao e comandos iniciais como `SET time_zone` ou `SET NAMES`.
+
+Cuidados para MySQL:
+
+- o protocolo classico MySQL nao multiplexa comandos independentes na mesma conexao, entao a sessao precisa continuar serializada;
+- prepared statements pertencem a conexao fisica, entao qualquer cache/eviction precisa respeitar o ciclo de vida da conexao do pool;
+- retries precisam ser conservadores, porque um erro de rede depois de enviar um `INSERT` pode deixar o resultado real desconhecido;
+- eventos nao podem montar strings caras nem serializar parametros no caminho quente quando nao houver listener ativo.
+
+#### Npgsql: data source, auto-prepare e observabilidade
+
+O Npgsql e uma base madura para estudar comportamento de driver, especialmente em:
+
+- `NpgsqlDataSource`/builder: separar configuracao imutavel compartilhada de conexoes fisicas; uma ideia equivalente em Dart seria um `MySQLDataSource` opcional que concentre pool, codecs, cache de prepared statements, TLS, hooks e metricas;
+- auto-prepare: estudar politica de preparo automatico, contadores de uso, limite de statements e eviction para melhorar o `autoPreparedStatementCacheCapacity` atual;
+- reset de conexao: estudar o modelo de devolver conexao limpa ao pool. Em MySQL, avaliar `COM_RESET_CONNECTION` como alternativa a fechar/reabrir ou executar varios `SET` manuais;
+- batch/command pipeline: adaptar apenas o que couber no protocolo MySQL, como multi-row insert, batch helpers e envio eficiente de varios comandos quando a semantica permitir;
+- logs/eventos gerados de forma barata: manter mensagens e parametros fora do caminho quente quando logging/telemetria estiver desativado;
+- OpenTelemetry/metrics como pacote opcional: expor hooks leves no nucleo e deixar integracoes pesadas fora do runtime principal;
+- multi-host/failover como investigacao futura: mapear hosts, prioridades, backoff e health checks sem aumentar custo para quem usa um unico servidor local.
+
+Trabalho recomendado inspirado nessas referencias:
+
+1. Criar um documento `doc/POOL_AND_DATASOURCE_DESIGN.md` antes de mudar API publica.
+2. Adicionar benchmarks de pool com fila saturada, abertura concorrente, reciclagem por idade/uso e retries desativados/ativados.
+3. Expor eventos opcionais de pool com custo zero ou quase zero quando nao houver listeners.
+4. Medir `COM_RESET_CONNECTION` ao devolver conexao e comparar com `SET` manual e reconexao completa.
+5. Reavaliar auto-prepare com politica de uso minimo antes de preparar, evitando thrash em SQLs raros.
+6. Garantir que qualquer nova API mantenha a regra principal: objetos presos a conexao fisica nao podem escapar do periodo em que a conexao esta emprestada ao usuario.
 
 ### Leitura apos benchmark AOT
 
@@ -155,6 +236,8 @@ O driver nao esta no limite do Dart. A `2.0.0` e uma base forte, mas ainda ha um
 | [`mysql_async`](https://github.com/blackbeam/mysql_async) | Pool assincrono, resultados em stream, cache de statements por conexao, tipos binarios e buffers | Referencia arquitetural para backpressure, pool e API de streaming | MIT/Apache-2.0 |
 | [`MySQL Connector/C`](https://dev.mysql.com/doc/c-api/8.0/en/) | Semantica oficial de prepared statements, resultados armazenados ou incrementais, envio de dados longos em partes | Referencia de comportamento e casos-limite do protocolo | GPL/comercial; consultar apenas como referencia |
 | [`Pointy Castle`](https://pub.dev/packages/pointycastle) | RSA-OAEP e SHA-1 para o fluxo completo de `caching_sha2_password` sem TLS | Evita implementar primitivas criptograficas manualmente | MIT |
+| `C:\MyDartProjects\dpgsql` | Pool por sessao, eventos, status, retries, reciclagem por idade/uso/erro/query count e endpoint configuravel | Referencia local para evoluir `MySQLConnectionPool` sem vazar objetos presos a conexao | Projeto local; usar como referencia conceitual |
+| `C:\MyDartProjects\dpgsql\referencias\npgsql` | Data source, pooling maduro, auto-prepare, reset de conexao, logs estruturados, metricas e OpenTelemetry | Referencia arquitetural para uma futura camada `MySQLDataSource`, telemetria e politica de auto-prepare | Consultar licenca antes de portar qualquer trecho |
 
 Nao existe evidencia publica suficiente para declarar um unico driver como "o mais rapido" em todas as cargas. Linguagem, runtime, rede, TLS, servidor e forma de consumo dos resultados mudam o resultado. O objetivo deve ser reproduzir as tecnicas desses drivers e comparar o `mysql_dart` no mesmo ambiente.
 

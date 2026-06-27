@@ -274,6 +274,51 @@ void main() {
     await connection.execute("DROP TABLE IF EXISTS binary_test");
   });
 
+  test('Prepared statements: JSON and binary result decoding', () async {
+    await connection.execute("DROP TABLE IF EXISTS binary_json_prepared_test");
+    await connection.execute('''
+      CREATE TABLE binary_json_prepared_test (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        payload JSON,
+        raw_blob BLOB,
+        note TEXT
+      )
+    ''');
+
+    final blob = Uint8List.fromList([0, 1, 2, 250, 255]);
+    final jsonValue = '{"name":"Alice","age":30,"nested":{"ok":true}}';
+
+    await connection.execute(
+      '''
+      INSERT INTO binary_json_prepared_test
+        (payload, raw_blob, note)
+      VALUES (?, ?, ?)
+      ''',
+      [jsonValue, blob, 'texto utf8 çã'],
+    );
+
+    final stmt = await connection.prepare('''
+      SELECT payload, raw_blob, note
+      FROM binary_json_prepared_test
+      WHERE id = ?
+    ''');
+    final result = await stmt.execute([1]);
+    await stmt.deallocate();
+
+    final row = result.rows.single;
+    final rawJson = row.colByName('payload');
+    final jsonText = rawJson is List<int> ? utf8.decode(rawJson) : '$rawJson';
+    final decodedJson = jsonDecode(jsonText) as Map<String, dynamic>;
+
+    expect(decodedJson['name'], equals('Alice'));
+    expect(decodedJson['age'], equals(30));
+    expect((decodedJson['nested'] as Map<String, dynamic>)['ok'], isTrue);
+    expect(row.typedColByName<Uint8List>('raw_blob'), equals(blob));
+    expect(row.colByName('note'), equals('texto utf8 çã'));
+
+    await connection.execute("DROP TABLE IF EXISTS binary_json_prepared_test");
+  });
+
   test('Prepared statements: DateTime milliseconds encoded correctly',
       () async {
     await connection.execute("DROP TABLE IF EXISTS datetime_millis_test");
