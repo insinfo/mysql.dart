@@ -163,17 +163,17 @@ void main() {
 
   test('Transactional: Rollback da transação em caso de erro', () async {
     // Cria uma tabela temporária para teste
-    await pool.execute("DROP TABLE IF EXISTS temp_test_rollback");
+    await pool.execute("DROP TABLE IF EXISTS pool_temp_test_rollback");
     await pool.execute(
-        "CREATE TABLE temp_test_rollback (id INT AUTO_INCREMENT PRIMARY KEY, value INT)  ENGINE=InnoDB;");
-    await pool
-        .execute("INSERT INTO temp_test_rollback (value) VALUES (10), (20)");
+        "CREATE TABLE pool_temp_test_rollback (id INT AUTO_INCREMENT PRIMARY KEY, value INT)  ENGINE=InnoDB;");
+    await pool.execute(
+        "INSERT INTO pool_temp_test_rollback (value) VALUES (10), (20)");
 
     // Executa uma transação que deve ser revertida
     try {
       await pool.transactional((conn) async {
         await conn.execute(
-          "UPDATE temp_test_rollback SET value = :value",
+          "UPDATE pool_temp_test_rollback SET value = :value",
           {"value": 200},
         );
         throw Exception("Forçando rollback");
@@ -183,10 +183,11 @@ void main() {
     }
 
     // Verifica se os valores permanecem inalterados (10 e 20)
-    final result = await pool.execute("SELECT value FROM temp_test_rollback");
+    final result =
+        await pool.execute("SELECT value FROM pool_temp_test_rollback");
     final values = result.rows.map((row) => row.colByName("value")).toList();
     expect(values, containsAll(['10', '20']));
-    await pool.execute("DROP TABLE IF EXISTS temp_test_rollback");
+    await pool.execute("DROP TABLE IF EXISTS pool_temp_test_rollback");
   });
 
   test('Aplica timeZone e callback onOpen', () async {
