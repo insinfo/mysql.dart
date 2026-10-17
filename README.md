@@ -324,6 +324,8 @@ If your query contains multiple statements, result will contain **next** propert
 
 IResulSet class implements Iterable<IResulSet> interface, so you can iterate throw all result sets using for..in loop.
 
+Every result of the batch is part of the chain: result sets (`SELECT`, `CALL` output) and OK results (`INSERT`, `UPDATE`, `CREATE`, `SET`, ...). OK results are `EmptyResultSet`s exposing `affectedRows` and `lastInsertID`. A `CALL` yields its result sets followed by a final OK result. If a statement fails, the future completes with a `MySQLServerException` and the remaining statements are not run; the connection stays usable.
+
 **Multple statements are not supported for prepared statements and iterable result sets.**
 
 For example:

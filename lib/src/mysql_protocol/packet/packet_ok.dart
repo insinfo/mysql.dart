@@ -19,12 +19,20 @@ class MySQLPacketOK extends MySQLPacketPayload {
   /// Último ID inserido (last insert ID).
   final BigInt lastInsertID;
 
+  /// Server status flags (e.g. `SERVER_MORE_RESULTS_EXISTS`, 0x0008).
+  final int statusFlags;
+
   /// Construtor da classe.
   MySQLPacketOK({
     required this.header,
     required this.affectedRows,
     required this.lastInsertID,
+    this.statusFlags = 0,
   });
+
+  /// Indicates that the server will send more results in this same response
+  /// (multi-statements / CALL).
+  bool get hasMoreResults => statusFlags & mysqlServerFlagMoreResultsExists != 0;
 
   /// Decodifica um buffer [Uint8List] recebido do servidor e retorna uma instância de [MySQLPacketOK].
   ///
@@ -49,10 +57,17 @@ class MySQLPacketOK extends MySQLPacketPayload {
     final lastInsertID = buffer.getVariableEncIntAt(offset);
     offset += lastInsertID.item2;
 
+    // 4) Status flags (2 bytes, little-endian), when present
+    var statusFlags = 0;
+    if (buffer.length >= offset + 2) {
+      statusFlags = buffer[offset] | (buffer[offset + 1] << 8);
+    }
+
     return MySQLPacketOK(
       header: header,
       affectedRows: affectedRows.item1,
       lastInsertID: lastInsertID.item1,
+      statusFlags: statusFlags,
     );
   }
 

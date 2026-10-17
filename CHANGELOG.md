@@ -1,3 +1,9 @@
+## Unreleased
+
+- fix: multi-statement text queries now read every result sent by the server, including OK-packet results (DDL/DML/`SET`/`CALL`), honoring `SERVER_MORE_RESULTS_EXISTS` on OK packets. Previously `execute()` returned after the first OK packet and left unread packets on the connection (leading to wrong results, `RangeError`s or error 1243 on the next command)
+- feat: OK results are chained through `IResultSet.next` as `EmptyResultSet`s carrying `affectedRows`/`lastInsertID`; `MySQLPacketOK` now exposes `statusFlags` and `hasMoreResults`
+- test: added `multi_statement_test.dart` integration tests (OK-only, failing, mixed, `CALL`, prepared-after-batch)
+
 ## 3.0.0
 
 - breaking: raised the minimum Dart SDK to `^3.6.0`, aligning the package with the AOT benchmark baseline and allowing future hot-path refactors to use modern Dart features
