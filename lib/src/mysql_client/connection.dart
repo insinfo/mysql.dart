@@ -680,6 +680,12 @@ class MySQLConnection {
   /// prepares and caches the statement so that binary values (BLOB/VARBINARY)
   /// travel via the MySQL binary protocol without manual `prepare()` calls.
   ///
+  /// Text queries (no [params]) may contain several statements. Every result
+  /// (result sets and OK results alike) is chained through [IResultSet.next];
+  /// if a statement fails, the future completes with a [MySQLServerException]
+  /// and the rest of the batch is not executed. Multiple statements are not
+  /// supported with parameters (prepared statements) or [iterable].
+  ///
   /// Set [iterable] to true to stream rows instead of buffering them all.
   Future<IResultSet> execute(
     String query, [
@@ -757,10 +763,24 @@ class MySQLConnection {
             if (MySQLPacket.detectPacketType(data) ==
                 MySQLGenericPacketType.ok) {
               final okPacket = MySQLPacket.decodeGenericPacket(data);
+              final okPayload = okPacket.payload as MySQLPacketOK;
+              final emptyResultSet = EmptyResultSet(okPacket: okPayload);
+
+              if (currentResultSet != null) {
+                currentResultSet!.next = emptyResultSet;
+              } else {
+                firstResultSet = emptyResultSet;
+              }
+              currentResultSet = emptyResultSet;
+
+              if (okPayload.hasMoreResults) {
+                // more results follow (multi-statements / CALL): keep reading
+                return;
+              }
+
+              state = 4;
               _markConnectionEstablished();
-              completer.complete(
-                EmptyResultSet(okPacket: okPacket.payload as MySQLPacketOK),
-              );
+              completer.complete(firstResultSet);
 
               return;
             }
