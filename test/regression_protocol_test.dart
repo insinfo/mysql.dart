@@ -68,8 +68,12 @@ void main() {
     expect(row['l'], '[1,2]');
     expect(row['s'], '["x"]');
     expect(row['b'], '18446744073709551615');
-    final bytes = await _row(
-        conn, 'select ? as v', [Uint8List.fromList([0, 1, 255])]);
+    // Through a BLOB column: MySQL 9 reports a bare `select ?` with the
+    // connection charset (text), MariaDB as binary.
+    await conn.execute('create temporary table reg_blob (v blob)');
+    await conn.execute(
+        'insert into reg_blob values (?)', [Uint8List.fromList([0, 1, 255])]);
+    final bytes = await _row(conn, 'select v from reg_blob');
     expect(bytes['v'], [0, 1, 255]);
   });
 
