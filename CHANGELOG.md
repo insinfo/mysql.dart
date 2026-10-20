@@ -1,5 +1,7 @@
 ## 3.0.1
 
+- fix: on MySQL 8.0.22+ the auto-prepared statement of an SQL text was reused for parameters of any type, but MySQL derives a parameter's type when the statement is prepared (or reprepared after a DDL) and converts later values to it: `select ? as v` prepared for an int returned `0` for `'a'`, and an insert prepared while a column was temporal failed with error 3988 ("Conversion from collation utf8mb4_0900_ai_ci into latin1_swedish_ci impossible") once the column became `varchar`. The cache key now includes the parameter types, and `create`/`alter`/`drop`/`rename`/`truncate` on the connection close the cached statements (MariaDB was not affected)
+
 - fix: an ERR packet that ends a result set after some rows (an error raised while a row is computed) was decoded as a row, which threw and closed the connection; it is now reported as `MySQLServerException` and the connection stays usable (text and prepared paths, iterable result sets included)
 - fix: a parameter rejected on the client (unsupported type) left the connection "busy with another command" forever; parameters are validated and the packet encoded before the connection is marked busy
 - fix: prepared-statement (binary) results ignored the UNSIGNED flag: `TINYINT UNSIGNED` 200 came back as -56, and `SMALLINT`/`INT`/`BIGINT UNSIGNED` above the signed range were negative; `BIGINT UNSIGNED` above 2^63 - 1 now becomes a `BigInt` (it threw a `FormatException` in `typedAssoc()`)

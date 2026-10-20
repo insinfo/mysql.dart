@@ -827,7 +827,8 @@ class MySQLConnection {
     final plan = _buildExecutePlan(query, params);
 
     if (plan.usePrepared) {
-      final stmt = await _getOrCreateAutoPreparedStmt(plan.query, iterable);
+      final stmt = await _getOrCreateAutoPreparedStmt(
+          plan.query, iterable, plan.positionalParams);
       // As in PreparedStmt.execute: extra parameters were silently ignored,
       // missing ones sent a malformed packet.
       if (stmt.numOfParams != plan.positionalParams.length) {
@@ -841,6 +842,10 @@ class MySQLConnection {
     }
 
     query = plan.query;
+
+    if (_autoPreparedStmtCache.isNotEmpty && _schemaChange.hasMatch(query)) {
+      _invalidateAutoPreparedStmts();
+    }
 
     // wait for ready state
     if (_state != _MySQLConnectionState.connectionEstablished) {
@@ -1404,11 +1409,18 @@ class MySQLConnection {
     return _NamedParamConversionResult(buffer.toString(), names);
   }
 
+  /// [params] are part of the key: MySQL 8.0.22+ derives the type of a
+  /// parameter when the statement is prepared (or reprepared after a DDL)
+  /// and converts later values to it. `select ? as v` prepared for an int
+  /// returned 0 for 'a', and an insert prepared while a column was temporal
+  /// rejected utf8mb4 text once the column became varchar (error 3988).
   Future<PreparedStmt> _getOrCreateAutoPreparedStmt(
     String query,
     bool iterable,
+    List<dynamic> params,
   ) async {
-    final key = _buildAutoPreparedCacheKey(query, iterable);
+    final key =
+        '${_buildAutoPreparedCacheKey(query, iterable)}::${_paramTypesKey(params)}';
     final cached = _autoPreparedStmtCache.remove(key);
 
     if (cached != null) {
@@ -1435,6 +1447,30 @@ class MySQLConnection {
 
   String _buildAutoPreparedCacheKey(String query, bool iterable) {
     return '${iterable ? 'iter' : 'plain'}::$query';
+  }
+
+  String _paramTypesKey(List<dynamic> params) {
+    final key = StringBuffer();
+    for (final param in params) {
+      key
+        ..write(_determineParamType(_normalizeParam(param))?.intVal ?? -1)
+        ..write(',');
+    }
+    return key.toString();
+  }
+
+  /// A statement that changes the schema: the auto-prepared statements may
+  /// refer to tables whose columns changed, and MySQL keeps the parameter
+  /// types derived when they were prepared. They are closed and prepared
+  /// again on their next use.
+  static final _schemaChange =
+      RegExp(r'^\s*(create|alter|drop|rename|truncate)\b', caseSensitive: false);
+
+  void _invalidateAutoPreparedStmts() {
+    for (final stmt in _autoPreparedStmtCache.values) {
+      _deferPreparedStmtClose(stmt._preparedPacket.stmtID);
+    }
+    _autoPreparedStmtCache.clear();
   }
 
   void _deferPreparedStmtClose(int stmtId) {

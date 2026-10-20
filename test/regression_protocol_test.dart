@@ -41,7 +41,8 @@ void main() {
   test('an error after some rows keeps the connection open', () async {
     const failing = 'select g.n, (select 1 union select 2 from dual '
         'where g.n > 1) as x from (select 1 as n union select 2) g';
-    await expectLater(conn.execute(failing), throwsA(isA<MySQLServerException>()));
+    await expectLater(
+        conn.execute(failing), throwsA(isA<MySQLServerException>()));
     expect((await _row(conn, 'select 1 as v'))['v'], 1);
     // Prepared (binary) path.
     await expectLater(conn.execute('$failing where ? = ?', [1, 1]),
@@ -51,8 +52,7 @@ void main() {
 
   test('a parameter the client rejects does not leave the connection busy',
       () async {
-    await expectLater(
-        conn.execute('select ? as v', [Object()]),
+    await expectLater(conn.execute('select ? as v', [Object()]),
         throwsA(isA<MySQLClientException>()));
     expect((await _row(conn, 'select 3 as v'))['v'], 3);
   });
@@ -71,8 +71,9 @@ void main() {
     // Through a BLOB column: MySQL 9 reports a bare `select ?` with the
     // connection charset (text), MariaDB as binary.
     await conn.execute('create temporary table reg_blob (v blob)');
-    await conn.execute(
-        'insert into reg_blob values (?)', [Uint8List.fromList([0, 1, 255])]);
+    await conn.execute('insert into reg_blob values (?)', [
+      Uint8List.fromList([0, 1, 255])
+    ]);
     final bytes = await _row(conn, 'select v from reg_blob');
     expect(bytes['v'], [0, 1, 255]);
   });
@@ -89,8 +90,7 @@ void main() {
   });
 
   test('named parameters skip strings, identifiers and comments', () async {
-    expect(
-        await _row(conn, r"select 'it\'s :x' as a, :y as b -- :z", {'y': 1}),
+    expect(await _row(conn, r"select 'it\'s :x' as a, :y as b -- :z", {'y': 1}),
         {'a': "it's :x", 'b': 1});
     expect(await _row(conn, "select 1 as `a:b`, :y as b /* :q */", {'y': 2}),
         {'a:b': 1, 'b': 2});
@@ -124,15 +124,44 @@ void main() {
 
   test('transactional() always clears its state and keeps the first error',
       () async {
-    await expectLater(
-        conn.transactional((c) async {
-          await c.execute('select 1');
-          throw StateError('boom');
-        }),
-        throwsStateError);
-    final row = await conn.transactional(
-        (c) async => (await c.execute('select 5 as v')).rows.single.typedAssoc());
+    await expectLater(conn.transactional((c) async {
+      await c.execute('select 1');
+      throw StateError('boom');
+    }), throwsStateError);
+    final row = await conn.transactional((c) async =>
+        (await c.execute('select 5 as v')).rows.single.typedAssoc());
     expect(row['v'], 5);
+  });
+
+  test('the same SQL with parameters of another type is not converted',
+      () async {
+    // MySQL 8.0.22+ derives a parameter's type when the statement is
+    // prepared: one auto-prepared statement for `select ? as v` returned 0
+    // for 'a' after an int.
+    expect((await _row(conn, 'select ? as v', [1]))['v'], 1);
+    expect((await _row(conn, 'select ? as v', ['a']))['v'], 'a');
+    expect((await _row(conn, 'select ? as v', [2.5]))['v'], 2.5);
+    expect((await _row(conn, 'select ? as v', [null]))['v'], isNull);
+    expect((await _row(conn, 'select ? as v', ['ção']))['v'], 'ção');
+  });
+
+  test('a table recreated with another column type gets a new statement',
+      () async {
+    await conn.execute('drop table if exists mysql_dart_ddl_cache');
+    await conn.execute('create table mysql_dart_ddl_cache (v datetime) '
+        'default charset utf8mb4');
+    await conn.execute('insert into mysql_dart_ddl_cache (v) values (?)',
+        ['2024-01-02 03:04:05']);
+    await conn.execute('drop table mysql_dart_ddl_cache');
+    await conn.execute('create table mysql_dart_ddl_cache (v varchar(20)) '
+        'default charset utf8mb4');
+    // MySQL kept the temporal (latin1) parameter type of the cached insert:
+    // error 3988 for utf8mb4 text.
+    await conn
+        .execute('insert into mysql_dart_ddl_cache (v) values (?)', ['😀 ção']);
+    expect((await _row(conn, 'select v from mysql_dart_ddl_cache'))['v'],
+        '😀 ção');
+    await conn.execute('drop table mysql_dart_ddl_cache');
   });
 
   test('close() completes after the server killed the session', () async {
@@ -140,8 +169,8 @@ void main() {
     final id = (await _row(victim, 'select connection_id() as id'))['id'];
     await conn.execute('KILL $id');
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    await expectLater(victim.execute('select 1'),
-        throwsA(isA<MySQLClientException>()));
+    await expectLater(
+        victim.execute('select 1'), throwsA(isA<MySQLClientException>()));
     // It used to wait forever flushing the destroyed socket.
     await victim.close().timeout(const Duration(seconds: 5));
     expect(victim.connected, isFalse);
