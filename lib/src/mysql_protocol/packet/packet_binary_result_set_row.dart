@@ -100,6 +100,7 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
           byteData,
           buffer,
           offset,
+          unsigned: (colDef.flags & _unsignedFlag) != 0,
         );
         // Avança o offset de acordo com o número de bytes lidos.
         offset += parseResult.item2;
@@ -206,3 +207,6 @@ int _readLengthEncodedHeader(Uint8List buffer, int offset) {
     "Cannot decode MySQLBinaryResultSetRowPacket: invalid length-encoded column header",
   );
 }
+
+/// Column definition flag UNSIGNED_FLAG.
+const int _unsignedFlag = 0x20;

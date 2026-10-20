@@ -54,9 +54,12 @@ void main() {
       expect(columnShouldBeTextual(colDef), isFalse);
     });
 
-    test('binary blob is kept as bytes by binary flag', () {
-      final colDef = blobColumn(charset: 45, flags: mysqlColumnFlagBinary);
-      expect(columnShouldBeBinary(colDef), isTrue);
+    test('a _bin collation (binary flag, text charset) stays textual', () {
+      // utf8mb4_bin (46): the server sets BINARY_FLAG for every _bin
+      // collation, but the data is text; only charset 63 means bytes.
+      final colDef = blobColumn(charset: 46, flags: mysqlColumnFlagBinary);
+      expect(columnShouldBeBinary(colDef), isFalse);
+      expect(columnShouldBeTextual(colDef), isTrue);
     });
 
     test('textual blob remains textual when no binary hint exists', () {

@@ -1,3 +1,16 @@
+## 3.0.1
+
+- fix: an ERR packet that ends a result set after some rows (an error raised while a row is computed) was decoded as a row, which threw and closed the connection; it is now reported as `MySQLServerException` and the connection stays usable (text and prepared paths, iterable result sets included)
+- fix: a parameter rejected on the client (unsupported type) left the connection "busy with another command" forever; parameters are validated and the packet encoded before the connection is marked busy
+- fix: prepared-statement (binary) results ignored the UNSIGNED flag: `TINYINT UNSIGNED` 200 came back as -56, and `SMALLINT`/`INT`/`BIGINT UNSIGNED` above the signed range were negative; `BIGINT UNSIGNED` above 2^63 - 1 now becomes a `BigInt` (it threw a `FormatException` in `typedAssoc()`)
+- fix: TEXT columns with a `_bin` collation (and MariaDB `JSON`) were returned as `Uint8List`: the server sets BINARY_FLAG for every `_bin` collation, so only the `binary` character set (63) now means bytes
+- fix: a query timeout left the statement running and the connection busy until it finished; the statement is now interrupted with `KILL QUERY` (through a short-lived second connection) and the connection is ready when the timeout is reported
+- fix: `:name` placeholders inside strings with `'` escapes, backtick identifiers and comments (`-- `, `#`, `/* */`) were treated as parameters
+- fix: `transactional()` marked the transaction before `START TRANSACTION` succeeded and a failing `ROLLBACK` replaced the original error and left "Already in transaction" set; the state is now always cleared, the original error kept, and a connection whose rollback failed is closed
+- fix: `close()` (and `MySQLConnectionPool.close()`) waited forever after the server closed the session (`KILL`, restart, network): it flushed the destroyed socket; it now just releases the connection
+- feat: `Map`, `List` and `Set` parameters are sent as JSON text and `BigInt` as its decimal text (they were rejected)
+- test: `regression_protocol_test.dart` covers each fix against a real server
+
 ## 3.0.0
 
 - breaking: raised the minimum Dart SDK to `^3.6.0`, aligning the package with the AOT benchmark baseline and allowing future hot-path refactors to use modern Dart features

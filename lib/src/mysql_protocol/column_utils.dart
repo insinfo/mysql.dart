@@ -25,10 +25,10 @@ bool columnShouldBeBinary(MySQLColumnDefinitionPacket colDef) {
     return false;
   }
 
-  final hasBinaryCollation = colDef.charset == mysqlBinaryCollationId;
-  final hasBinaryFlag = (colDef.flags & mysqlColumnFlagBinary) != 0;
-
-  return hasBinaryCollation || hasBinaryFlag;
+  // Only the `binary` character set (63) means bytes. BINARY_FLAG is also set
+  // for every `_bin` collation (utf8mb4_bin, MariaDB's JSON), which made those
+  // TEXT columns come back as Uint8List instead of String.
+  return colDef.charset == mysqlBinaryCollationId;
 }
 
 /// Returns true when a blob-typed column actually carries textual data.

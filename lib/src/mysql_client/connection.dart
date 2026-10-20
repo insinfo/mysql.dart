@@ -56,6 +56,9 @@ class MySQLConnection {
   Future<void> Function(Uint8List data)? _responseCallback;
   final List<void Function()> _onCloseCallbacks = [];
   bool _inTransaction = false;
+
+  /// Server thread id of this connection (handshake), used by KILL QUERY.
+  int _serverConnectionId = 0;
   final bool _secure;
   Uint8List? _pendingPacketBytes;
   Object? _lastError;
@@ -553,6 +556,7 @@ class MySQLConnection {
     }
     // logger.d(payload);
     _serverCapabilities = payload.capabilityFlags;
+    _serverConnectionId = payload.connectionID;
     _authSeed = _buildCachingSha2Seed(
       payload.authPluginDataPart1,
       payload.authPluginDataPart2,
@@ -714,8 +718,6 @@ class MySQLConnection {
           .timeout(Duration(milliseconds: _timeoutMs));
     }
 
-    _state = _MySQLConnectionState.waitingCommandResponse;
-
     final payload = MySQLPacketCommQuery(query: query);
 
     final packet = MySQLPacket(
@@ -723,6 +725,11 @@ class MySQLConnection {
       payload: payload,
       payloadLength: 0,
     );
+    // Encoded before the connection is marked busy: a failure here must not
+    // leave it "busy with another command" forever.
+    final encodedPacket = packet.encode();
+
+    _state = _MySQLConnectionState.waitingCommandResponse;
 
     final completer = Completer<IResultSet>();
 
@@ -777,6 +784,24 @@ class MySQLConnection {
             }
             break;
           case 3:
+            // An ERR packet can end a result set after some rows (e.g. an
+            // error raised while a row is computed). It used to be decoded as
+            // a row, which threw and closed the connection.
+            if (MySQLPacket.detectPacketType(data) ==
+                MySQLGenericPacketType.error) {
+              final errorPacket = MySQLPacket.decodeGenericPacket(data);
+              final error = errorPacket.payload as MySQLPacketError;
+              final exception =
+                  MySQLServerException(error.errorMessage, error.errorCode);
+              _markConnectionEstablished();
+              if (sink != null) {
+                sink!.addError(exception);
+                await sink!.close();
+              } else if (!completer.isCompleted) {
+                completer.completeError(exception);
+              }
+              return;
+            }
             if (iterable) {
               if (iterableResultSet == null) {
                 iterableResultSet = IterableResultSet._(
@@ -913,7 +938,7 @@ class MySQLConnection {
       }
     };
 
-    _socket.add(packet.encode());
+    _socket.add(encodedPacket);
 
     return _applyQueryTimeout(completer.future, queryTimeout);
   }
@@ -926,96 +951,131 @@ class MySQLConnection {
     if (_inTransaction) {
       throw MySQLClientException("Already in transaction");
     }
-    _inTransaction = true;
-
-    // Desativa o autocommit
-    // await execute("SET autocommit = 0");
+    // Marked only once START TRANSACTION succeeded, and always cleared: a
+    // failing START or ROLLBACK used to leave "Already in transaction" set.
     await execute("START TRANSACTION");
+    _inTransaction = true;
 
     try {
       final result = await callback(this);
       await execute("COMMIT");
-      // Reativa o autocommit após commit
-      // await execute("SET autocommit = 1");
-      _inTransaction = false;
       return result;
-    } catch (e) {
-      await execute("ROLLBACK");
-      // Reativa o autocommit após rollback
-      // await execute("SET autocommit = 1");
+    } catch (e, stackTrace) {
+      try {
+        await execute("ROLLBACK");
+      } catch (_) {
+        // The transaction could not be rolled back (connection busy or
+        // broken): close it, so the open transaction cannot leak into the
+        // next user of this connection. The original error is kept.
+        _forceClose();
+      }
+      Error.throwWithStackTrace(e, stackTrace);
+    } finally {
       _inTransaction = false;
-      rethrow;
     }
   }
 
   String _substitureParams(String query, Map<String, Object?> params) {
-    final matches = _findBindableNamedParamMatches(query);
+    final tokens = _findBindableNamedParams(query);
 
-    if (matches.isEmpty) {
+    if (tokens.isEmpty) {
       return query;
     }
 
-    final convertedParams = <String, String>{};
-
-    for (final param in params.entries) {
-      String value;
-
-      if (param.value == null) {
-        value = "NULL";
-      } else if (param.value is String) {
-        value = "'${_escapeString(param.value as String)}'";
-      } else if (param.value is num) {
-        value = param.value.toString();
-      } else if (param.value is bool) {
-        value = (param.value as bool) ? "TRUE" : "FALSE";
-      } else {
-        value = "'${_escapeString(param.value.toString())}'";
-      }
-
-      convertedParams[param.key] = value;
-    }
-
-    int lengthShift = 0;
-
-    for (final match in matches) {
-      final paramName = match.group(1);
-
-      if (paramName == null || !convertedParams.containsKey(paramName)) {
+    final buffer = StringBuffer();
+    var lastIndex = 0;
+    for (final token in tokens) {
+      if (!params.containsKey(token.name)) {
         throw MySQLClientException(
-            "There is no parameter with name: $paramName");
+            "There is no parameter with name: ${token.name}");
       }
-
-      final newQuery = query.replaceFirst(
-        match.group(0)!,
-        convertedParams[paramName]!,
-        match.start + lengthShift,
-      );
-
-      lengthShift += newQuery.length - query.length;
-      query = newQuery;
+      final value = params[token.name];
+      final String sql;
+      if (value == null) {
+        sql = "NULL";
+      } else if (value is String) {
+        sql = "'${_escapeString(value)}'";
+      } else if (value is num) {
+        sql = value.toString();
+      } else if (value is bool) {
+        sql = value ? "TRUE" : "FALSE";
+      } else {
+        sql = "'${_escapeString(value.toString())}'";
+      }
+      buffer
+        ..write(query.substring(lastIndex, token.start))
+        ..write(sql);
+      lastIndex = token.end;
     }
-
-    return query;
+    buffer.write(query.substring(lastIndex));
+    return buffer.toString();
   }
 
-  List<RegExpMatch> _findBindableNamedParamMatches(String query) {
-    final pattern = RegExp(r":(\w+)");
-
-    return pattern.allMatches(query).where((match) {
-      final subString = query.substring(0, match.start);
-
-      int count = "'".allMatches(subString).length;
-      if (count > 0 && count.isOdd) {
-        return false;
+  /// `:name` placeholders outside string literals ('...', "..."),
+  /// identifiers (`...`) and comments (-- , #, /* */). Counting quotes before
+  /// the match broke on `\'` escapes and ignored comments and backticks.
+  static List<_NamedParamToken> _findBindableNamedParams(String query) {
+    final tokens = <_NamedParamToken>[];
+    final length = query.length;
+    bool isWord(int c) =>
+        (c >= 0x30 && c <= 0x39) ||
+        (c >= 0x41 && c <= 0x5a) ||
+        (c >= 0x61 && c <= 0x7a) ||
+        c == 0x5f;
+    var i = 0;
+    while (i < length) {
+      final c = query.codeUnitAt(i);
+      if (c == 0x27 || c == 0x22 || c == 0x60) {
+        // '...', "..." (backslash and doubled-quote escapes), `...`.
+        i++;
+        while (i < length) {
+          final d = query.codeUnitAt(i);
+          if (d == 0x5c && c != 0x60 && i + 1 < length) {
+            i += 2;
+            continue;
+          }
+          if (d == c) {
+            if (i + 1 < length && query.codeUnitAt(i + 1) == c) {
+              i += 2;
+              continue;
+            }
+            break;
+          }
+          i++;
+        }
+        i++;
+        continue;
       }
-
-      count = '"'.allMatches(subString).length;
-      if (count > 0 && count.isOdd) {
-        return false;
+      final isDashComment = c == 0x2d &&
+          i + 1 < length &&
+          query.codeUnitAt(i + 1) == 0x2d &&
+          (i + 2 >= length || query.codeUnitAt(i + 2) <= 0x20);
+      if (c == 0x23 || isDashComment) {
+        while (i < length && query.codeUnitAt(i) != 0x0a) {
+          i++;
+        }
+        continue;
       }
-
-      return true;
-    }).toList();
+      if (c == 0x2f && i + 1 < length && query.codeUnitAt(i + 1) == 0x2a) {
+        final close = query.indexOf('*/', i + 2);
+        i = close < 0 ? length : close + 2;
+        continue;
+      }
+      if (c == 0x3a &&
+          i + 1 < length &&
+          isWord(query.codeUnitAt(i + 1)) &&
+          (i == 0 || query.codeUnitAt(i - 1) != 0x3a)) {
+        var end = i + 1;
+        while (end < length && isWord(query.codeUnitAt(end))) {
+          end++;
+        }
+        tokens.add(_NamedParamToken(i, end, query.substring(i + 1, end)));
+        i = end;
+        continue;
+      }
+      i++;
+    }
+    return tokens;
   }
 
   _ExecutePlan _buildExecutePlan(String query, Object? params) {
@@ -1066,7 +1126,7 @@ class MySQLConnection {
   }
 
   _NamedParamConversionResult _convertNamedParamsToPositional(String query) {
-    final matches = _findBindableNamedParamMatches(query);
+    final matches = _findBindableNamedParams(query);
 
     if (matches.isEmpty) {
       return _NamedParamConversionResult(query, const <String>[]);
@@ -1079,7 +1139,7 @@ class MySQLConnection {
     for (final match in matches) {
       buffer.write(query.substring(lastIndex, match.start));
       buffer.write('?');
-      names.add(match.group(1)!);
+      names.add(match.name);
       lastIndex = match.end;
     }
 
@@ -1140,14 +1200,54 @@ class MySQLConnection {
   Future<IResultSet> _applyQueryTimeout(
     Future<IResultSet> future,
     Duration? queryTimeout,
-  ) {
-    if (queryTimeout != null) {
-      return future.timeout(queryTimeout, onTimeout: () {
-        throw MySQLClientException("Query timed out after $queryTimeout");
-      });
+  ) async {
+    if (queryTimeout == null) {
+      return future;
     }
+    try {
+      return await future.timeout(queryTimeout);
+    } on TimeoutException {
+      // The statement kept running on the server and the connection stayed
+      // "busy" until it finished. Interrupt it and wait for its reply, so the
+      // connection is ready for the next command when the error is thrown.
+      await _killRunningQuery();
+      try {
+        await _waitForState(_MySQLConnectionState.connectionEstablished)
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        _forceClose();
+      }
+      throw MySQLClientException("Query timed out after $queryTimeout");
+    }
+  }
 
-    return future;
+  /// `KILL QUERY <thread id>` through a short-lived second connection (the
+  /// MySQL protocol has no in-band cancel). Errors are ignored.
+  Future<void> _killRunningQuery() async {
+    if (_serverConnectionId == 0) return;
+    MySQLConnection? killer;
+    try {
+      killer = await MySQLConnection.createConnection(
+        host: _socket.remoteAddress,
+        port: _socket.remotePort,
+        userName: _username,
+        password: _password,
+        secure: _secure,
+        collation: _collation,
+        securityContext: _securityContext,
+        onBadCertificate: _onBadCertificate,
+        allowPublicKeyRetrieval: _allowPublicKeyRetrieval,
+        serverPublicKey: _serverPublicKey,
+      );
+      await killer.connect();
+      await killer.execute('KILL QUERY $_serverConnectionId');
+    } catch (_) {
+      // Best effort: the caller still gets the timeout.
+    } finally {
+      try {
+        await killer?.close();
+      } catch (_) {}
+    }
   }
 
   /// Prepares given [query]
@@ -1303,8 +1403,10 @@ class MySQLConnection {
 
     await _flushDeferredStmtCloses();
 
-    _state = _MySQLConnectionState.waitingCommandResponse;
-
+    // Everything that can fail on the client side happens before the
+    // connection is marked busy (an unsupported parameter used to leave it
+    // "busy with another command" forever).
+    params = params.map(_normalizeParam).toList(growable: false);
     final paramTypeCodes = _determineParamTypeCodes(params);
     final sendTypes = stmt._shouldSendParamTypes(paramTypeCodes);
     final payload = MySQLPacketCommStmtExecute(
@@ -1313,7 +1415,10 @@ class MySQLConnection {
       paramTypeCodes: paramTypeCodes,
       sendTypes: sendTypes,
     );
+    final encodedPayload = payload.encodePacket(0);
     stmt._updateParamTypeCache(paramTypeCodes, sendTypes);
+
+    _state = _MySQLConnectionState.waitingCommandResponse;
 
     final completer = Completer<IResultSet>();
 
@@ -1380,6 +1485,24 @@ class MySQLConnection {
             }
             break;
           case 3:
+            // An ERR packet can end a result set after some rows (e.g. an
+            // error raised while a row is computed). It used to be decoded as
+            // a row, which threw and closed the connection.
+            if (MySQLPacket.detectPacketType(data) ==
+                MySQLGenericPacketType.error) {
+              final errorPacket = MySQLPacket.decodeGenericPacket(data);
+              final error = errorPacket.payload as MySQLPacketError;
+              final exception =
+                  MySQLServerException(error.errorMessage, error.errorCode);
+              _markConnectionEstablished();
+              if (sink != null) {
+                sink!.addError(exception);
+                await sink!.close();
+              } else if (!completer.isCompleted) {
+                completer.completeError(exception);
+              }
+              return;
+            }
             if (iterable) {
               if (iterableResultSet == null) {
                 iterableResultSet = IterablePreparedStmtResultSet._(
@@ -1500,9 +1623,19 @@ class MySQLConnection {
       }
     };
 
-    _socket.add(payload.encodePacket(0));
+    _socket.add(encodedPayload);
 
     return completer.future;
+  }
+
+  /// Parameter values with no native MySQL binary type: maps, lists and sets
+  /// become JSON text (for JSON columns), BigInt its decimal text.
+  static Object? _normalizeParam(Object? value) {
+    if (value is Uint8List) return value;
+    if (value is Map || value is List) return jsonEncode(value);
+    if (value is Set) return jsonEncode(value.toList());
+    if (value is BigInt) return value.toString();
+    return value;
   }
 
   // adicionei esta função para determinar os tipos
@@ -1608,6 +1741,14 @@ class MySQLConnection {
       payload: MySQLPacketCommQuit(),
       payloadLength: 0,
     );
+
+    if (!_connected && _state == _MySQLConnectionState.connectionEstablished) {
+      // The server already closed the socket (KILL, restart, network). There
+      // is nothing to send; flushing the destroyed socket never completed,
+      // so close() used to hang.
+      _forceClose();
+      return;
+    }
 
     if (_state != _MySQLConnectionState.connectionEstablished) {
       throw MySQLClientException(
@@ -2062,7 +2203,9 @@ class ResultSetRow {
       if (value is int) {
         return value;
       }
-      return int.parse(value.toString());
+      final text = value.toString();
+      // BIGINT UNSIGNED above 2^63 - 1 does not fit a Dart int.
+      return int.tryParse(text) ?? BigInt.parse(text);
     }
 
     if (identical(dartType, double)) {
@@ -2230,6 +2373,14 @@ class _ExecutePlan {
 
   factory _ExecutePlan.prepared(String query, List<dynamic> params) =>
       _ExecutePlan._(true, query, params);
+}
+
+class _NamedParamToken {
+  const _NamedParamToken(this.start, this.end, this.name);
+
+  final int start;
+  final int end;
+  final String name;
 }
 
 class _NamedParamConversionResult {

@@ -290,31 +290,44 @@ Tuple2<dynamic, int> parseBinaryColumnData(
   int columnType,
   ByteData data,
   Uint8List buffer,
-  int startOffset,
-) {
+  int startOffset, {
+  bool unsigned = false,
+}) {
+  // [unsigned] comes from the column's UNSIGNED flag: without it a
+  // TINYINT UNSIGNED 200 was read as -56 (and so on for every width).
   switch (columnType) {
     case mysqlColumnTypeTiny:
       {
-        final value = data.getInt8(startOffset);
+        final value = unsigned
+            ? data.getUint8(startOffset)
+            : data.getInt8(startOffset);
         return Tuple2(value.toString(), 1);
       }
 
     case mysqlColumnTypeShort:
       {
-        final value = data.getInt16(startOffset, Endian.little);
+        final value = unsigned
+            ? data.getUint16(startOffset, Endian.little)
+            : data.getInt16(startOffset, Endian.little);
         return Tuple2(value.toString(), 2);
       }
 
     case mysqlColumnTypeLong:
     case mysqlColumnTypeInt24:
       {
-        final value = data.getInt32(startOffset, Endian.little);
+        final value = unsigned
+            ? data.getUint32(startOffset, Endian.little)
+            : data.getInt32(startOffset, Endian.little);
         return Tuple2(value.toString(), 4);
       }
 
     case mysqlColumnTypeLongLong:
       {
         final value = data.getInt64(startOffset, Endian.little);
+        if (unsigned && value < 0) {
+          // Above 2^63 - 1: the two's-complement int64 plus 2^64.
+          return Tuple2((BigInt.from(value) + (BigInt.one << 64)).toString(), 8);
+        }
         return Tuple2(value.toString(), 8);
       }
 
