@@ -33,6 +33,34 @@ const mysqlCapFlagClientDeprecateEOF = 0x01000000;
 
 const mysqlServerFlagMoreResultsExists = 0x0008;
 
+/// Largest payload one packet carries (its 3-byte length field).
+const mysqlMaxPacketPayloadLength = 0xffffff;
+
+/// Frames a payload of [mysqlMaxPacketPayloadLength] bytes or more as
+/// packets of [mysqlMaxPacketPayloadLength] bytes followed by a shorter
+/// (possibly empty) one, with consecutive sequence ids. The length field used
+/// to be truncated instead, which desynchronized the connection.
+Uint8List frameLargePayload(Uint8List payload, int sequenceID) {
+  final packets = payload.length ~/ mysqlMaxPacketPayloadLength + 1;
+  final out = Uint8List(payload.length + packets * 4);
+  var source = 0;
+  var target = 0;
+  for (var i = 0; i < packets; i++) {
+    final remaining = payload.length - source;
+    final length = remaining < mysqlMaxPacketPayloadLength
+        ? remaining
+        : mysqlMaxPacketPayloadLength;
+    out[target] = length & 0xff;
+    out[target + 1] = (length >> 8) & 0xff;
+    out[target + 2] = (length >> 16) & 0xff;
+    out[target + 3] = (sequenceID + i) & 0xff;
+    out.setRange(target + 4, target + 4 + length, payload, source);
+    source += length;
+    target += 4 + length;
+  }
+  return out;
+}
+
 /// Enum que representa o tipo genérico de pacote MySQL.
 enum MySQLGenericPacketType {
   /// Pacote OK (header 0x00).
@@ -333,6 +361,9 @@ class MySQLPacket {
   Uint8List encode() {
     final payloadData = payload.encode();
     final payloadLength = payloadData.lengthInBytes;
+    if (payloadLength >= mysqlMaxPacketPayloadLength) {
+      return frameLargePayload(payloadData, sequenceID);
+    }
     final out = Uint8List(payloadLength + 4);
     out[0] = payloadLength & 0xFF;
     out[1] = (payloadLength >> 8) & 0xFF;

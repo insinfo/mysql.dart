@@ -54,13 +54,49 @@ class MySQLConnection {
   final String _collation;
   final String? _databaseName;
   Future<void> Function(Uint8List data)? _responseCallback;
+
+  /// Fails the command waiting for its reply; set while it runs. Without it,
+  /// a command (and the commands queued behind it) waited forever when the
+  /// server closed the connection (KILL, restart, network).
+  void Function(Object error, [StackTrace? stackTrace])? _abortCommand;
+
+  /// Incremented for every command sent; see the iterable `onCancel`.
+  int _commandSerial = 0;
   final List<void Function()> _onCloseCallbacks = [];
-  bool _inTransaction = false;
+
+  /// Commands run one at a time, in call order: concurrent callers of one
+  /// connection wait for their turn instead of failing with "connection is
+  /// busy with another command". The turn ends when the server finished
+  /// replying (for an iterable result set, when its last row arrived).
+  Future<void> _commandTail = Future<void>.value();
+
+  /// Completes when the running [transactional] commits or rolls back;
+  /// `null` when there is none. Commands from outside the transaction wait
+  /// for it, so they never run inside another caller's transaction.
+  Completer<void>? _transactionGate;
+
+  /// Zone value set while [transactional]'s callback runs: commands issued
+  /// from it (and from anything it starts) belong to the transaction. The
+  /// key is per connection (a transaction on another connection, nested in
+  /// the callback, does not hide it) and the value is the transaction's gate
+  /// (work the callback left running does not join a later transaction).
+  final Object _transactionZoneKey = Object();
+
+  /// See `queueConcurrentCalls` in [createConnection].
+  final bool _queueConcurrentCalls;
 
   /// Server thread id of this connection (handshake), used by KILL QUERY.
   int _serverConnectionId = 0;
   final bool _secure;
   Uint8List? _pendingPacketBytes;
+
+  /// Chunks received for the incomplete packet in [_pendingPacketBytes],
+  /// and the size of that packet (0 while its header is incomplete).
+  BytesBuilder? _pendingChunks;
+  int _pendingPacketLength = 0;
+
+  /// Parts read so far of a payload split over several packets.
+  BytesBuilder? _largePacket;
   Object? _lastError;
   int _serverCapabilities = 0;
   String? _activeAuthPluginName;
@@ -92,7 +128,9 @@ class MySQLConnection {
     bool allowPublicKeyRetrieval = false,
     String? serverPublicKey,
     int autoPreparedStatementCacheCapacity = 32,
+    bool queueConcurrentCalls = true,
   })  : _socket = socket,
+        _queueConcurrentCalls = queueConcurrentCalls,
         _username = username,
         _password = password,
         _databaseName = databaseName,
@@ -120,6 +158,13 @@ class MySQLConnection {
   /// ```
   /// SET @@collation_connection=$_collation, @@character_set_client=utf8mb4, @@character_set_connection=utf8mb4, @@character_set_results=utf8mb4
   /// ```
+  ///
+  /// [queueConcurrentCalls] (default true): concurrent callers wait for
+  /// their turn, and commands from outside a [transactional] callback wait
+  /// for it to end. With false, a command issued while another one runs
+  /// fails with "connection is busy with another command" and a second
+  /// [transactional] with "Already in transaction" (the 3.0.0 behavior,
+  /// useful to detect a connection shared by mistake).
   static Future<MySQLConnection> createConnection({
     required dynamic host,
     required int port,
@@ -133,6 +178,7 @@ class MySQLConnection {
     bool allowPublicKeyRetrieval = false,
     String? serverPublicKey,
     int autoPreparedStatementCacheCapacity = 32,
+    bool queueConcurrentCalls = true,
   }) async {
     if (autoPreparedStatementCacheCapacity < 1) {
       throw ArgumentError.value(
@@ -161,6 +207,7 @@ class MySQLConnection {
       allowPublicKeyRetrieval: allowPublicKeyRetrieval,
       serverPublicKey: serverPublicKey,
       autoPreparedStatementCacheCapacity: autoPreparedStatementCacheCapacity,
+      queueConcurrentCalls: queueConcurrentCalls,
     );
 
     // Armazena os parâmetros de SSL no cliente (adicione esses campos na classe)
@@ -225,6 +272,7 @@ class MySQLConnection {
     _failConnectionEstablishedWaiters(
       MySQLClientException("Connection closed"),
     );
+    _abortPendingCommand(_lastError ?? MySQLClientException("Connection closed"));
     _socket.destroy();
 
     for (var element in _onCloseCallbacks) {
@@ -258,11 +306,46 @@ class MySQLConnection {
       onError: (Object error, StackTrace st) {
         _lastError = error;
         _failConnectionEstablishedWaiters(error, st);
+        _abortPendingCommand(error, st);
+        if (_connected) {
+          // The socket is unusable after an error.
+          _forceClose();
+        }
       },
     );
   }
 
+  void _abortPendingCommand(Object error, [StackTrace? stackTrace]) {
+    final abort = _abortCommand;
+    _abortCommand = null;
+    abort?.call(error, stackTrace);
+  }
+
+  /// Socket paused by an iterable result set's consumer (backpressure).
+  bool _socketPausedForResultSet = false;
+
+  /// Pauses the socket for a slow consumer of a streaming result set. It is
+  /// resumed when the consumer resumes or, at the latest, when the command
+  /// ends: a stream paused while its last rows were still buffered never
+  /// called onResume, and the socket stayed paused, so the next command on
+  /// the connection waited forever.
+  void _pauseSocketForResultSet() {
+    if (!_socketPausedForResultSet) {
+      _socketPausedForResultSet = true;
+      _socketSubscription?.pause();
+    }
+  }
+
+  void _resumeSocketForResultSet() {
+    if (_socketPausedForResultSet) {
+      _socketPausedForResultSet = false;
+      _socketSubscription?.resume();
+    }
+  }
+
   void _markConnectionEstablished() {
+    _abortCommand = null;
+    _resumeSocketForResultSet();
     _state = _MySQLConnectionState.connectionEstablished;
     _connected = true;
 
@@ -511,10 +594,17 @@ class MySQLConnection {
     final pending = _pendingPacketBytes;
 
     if (pending != null && pending.isNotEmpty) {
-      final merged = Uint8List(pending.length + data.length);
-      merged.setRange(0, pending.length, pending);
-      merged.setRange(pending.length, merged.length, data);
-      buffer = merged;
+      // Chunks are collected until the packet is complete: merging all the
+      // bytes received so far on every chunk was quadratic for packets of
+      // several megabytes (over TLS, a 16 MB row took tens of seconds).
+      final chunks =
+          _pendingChunks ??= (BytesBuilder(copy: false)..add(pending));
+      chunks.add(data);
+      if (chunks.length < _pendingPacketLength) {
+        return;
+      }
+      buffer = chunks.takeBytes();
+      _pendingChunks = null;
       _pendingPacketBytes = null;
     }
 
@@ -527,8 +617,31 @@ class MySQLConnection {
         break;
       }
 
-      yield Uint8List.sublistView(buffer, offset, offset + packetLength);
+      final packet =
+          Uint8List.sublistView(buffer, offset, offset + packetLength);
       offset += packetLength;
+
+      // A payload of 0xffffff bytes or more arrives split: packets of
+      // 0xffffff bytes, then a shorter (possibly empty) one. They are joined
+      // under the first header; the empty last packet used to throw a
+      // RangeError and the parts were decoded as separate packets.
+      final large = _largePacket;
+      final isPart = packetLength - 4 == mysqlMaxPacketPayloadLength;
+      if (isPart || large != null) {
+        final builder = large ?? (BytesBuilder()..add(packet));
+        if (large != null) {
+          builder.add(Uint8List.sublistView(packet, 4));
+        }
+        if (isPart) {
+          _largePacket = builder;
+          continue;
+        }
+        _largePacket = null;
+        yield builder.takeBytes();
+        continue;
+      }
+
+      yield packet;
     }
 
     if (offset < buffer.length) {
@@ -536,6 +649,8 @@ class MySQLConnection {
       final pendingCopy = Uint8List(remaining);
       pendingCopy.setRange(0, remaining, buffer, offset);
       _pendingPacketBytes = pendingCopy;
+      _pendingPacketLength =
+          remaining >= 4 ? MySQLPacket.getPacketLength(pendingCopy) : 0;
     }
   }
 
@@ -690,7 +805,15 @@ class MySQLConnection {
     Object? params,
     bool iterable = false,
     Duration? queryTimeout,
-  ]) async {
+  ]) =>
+      _serialized(() => _execute(query, params, iterable, queryTimeout));
+
+  Future<IResultSet> _execute(
+    String query,
+    Object? params,
+    bool iterable,
+    Duration? queryTimeout,
+  ) async {
     if (!_connected) {
       throw MySQLClientException("Can not execute query: connection closed");
     }
@@ -705,6 +828,13 @@ class MySQLConnection {
 
     if (plan.usePrepared) {
       final stmt = await _getOrCreateAutoPreparedStmt(plan.query, iterable);
+      // As in PreparedStmt.execute: extra parameters were silently ignored,
+      // missing ones sent a malformed packet.
+      if (stmt.numOfParams != plan.positionalParams.length) {
+        throw MySQLClientException(
+          "Can not execute query: number of passed params != number of prepared params",
+        );
+      }
       final futureResult =
           _executePreparedStmt(stmt, plan.positionalParams, iterable);
       return _applyQueryTimeout(futureResult, queryTimeout);
@@ -754,6 +884,39 @@ class MySQLConnection {
     IResultSet? currentResultSet;
     IResultSet? firstResultSet;
 
+    // An iterable result streams the first result only: the results after
+    // it (multi-statement queries, CALL) are read and discarded. They used
+    // to be left unread, and the next command got them as its reply.
+    var discardResults = false;
+    var streamClosed = false;
+
+    void addResult(IResultSet resultSet) {
+      if (currentResultSet != null) {
+        currentResultSet!.next = resultSet;
+      } else {
+        firstResultSet = resultSet;
+      }
+      currentResultSet = resultSet;
+    }
+
+    void closeStream() {
+      if (sink != null && !streamClosed) {
+        streamClosed = true;
+        unawaited(sink!.close());
+      }
+    }
+
+    void fail(Object error, [StackTrace? stackTrace]) {
+      if (!completer.isCompleted) {
+        completer.completeError(error, stackTrace);
+      } else if (sink != null && !streamClosed) {
+        sink!.addError(error, stackTrace);
+        closeStream();
+      }
+    }
+
+    final command = ++_commandSerial;
+    _abortCommand = fail;
     _responseCallback = (data) async {
       try {
         MySQLPacket? packet;
@@ -764,10 +927,25 @@ class MySQLConnection {
             if (MySQLPacket.detectPacketType(data) ==
                 MySQLGenericPacketType.ok) {
               final okPacket = MySQLPacket.decodeGenericPacket(data);
+              final ok = okPacket.payload as MySQLPacketOK;
+              if (!discardResults) {
+                if (iterable) {
+                  completer.complete(EmptyResultSet(okPacket: ok));
+                  discardResults = true;
+                } else {
+                  addResult(EmptyResultSet(okPacket: ok));
+                }
+              }
+              if (ok.statusFlags & mysqlServerFlagMoreResultsExists != 0) {
+                // Another result follows (`INSERT ...; SELECT ...`, CALL).
+                return;
+              }
               _markConnectionEstablished();
-              completer.complete(
-                EmptyResultSet(okPacket: okPacket.payload as MySQLPacketOK),
-              );
+              if (iterable) {
+                closeStream();
+              } else {
+                completer.complete(firstResultSet);
+              }
 
               return;
             }
@@ -794,23 +972,30 @@ class MySQLConnection {
               final exception =
                   MySQLServerException(error.errorMessage, error.errorCode);
               _markConnectionEstablished();
-              if (sink != null) {
-                sink!.addError(exception);
-                await sink!.close();
-              } else if (!completer.isCompleted) {
-                completer.completeError(exception);
-              }
+              fail(exception);
               return;
             }
             if (iterable) {
-              if (iterableResultSet == null) {
+              if (!discardResults && iterableResultSet == null) {
                 iterableResultSet = IterableResultSet._(
                   columns: colDefs,
-                  onPause: () => _socketSubscription?.pause(),
-                  onResume: () => _socketSubscription?.resume(),
+                  // Backpressure while this result set streams; see
+                  // _pauseSocketForResultSet.
+                  onPause: () {
+                    if (command == _commandSerial &&
+                        _state ==
+                            _MySQLConnectionState.waitingCommandResponse) {
+                      _pauseSocketForResultSet();
+                    }
+                  },
+                  onResume: _resumeSocketForResultSet,
+                  // Only while this result set is still streaming: once it
+                  // ended, the connection may be running the next command
+                  // (queued meanwhile), which must not be killed.
                   onCancel: () {
-                    if (_state ==
-                        _MySQLConnectionState.waitingCommandResponse) {
+                    if (command == _commandSerial &&
+                        _state ==
+                            _MySQLConnectionState.waitingCommandResponse) {
                       _forceClose();
                     }
                   },
@@ -823,10 +1008,24 @@ class MySQLConnection {
               // check eof
               if (MySQLPacket.detectPacketType(data) ==
                   MySQLGenericPacketType.eof) {
+                discardResults = true;
+                final eofPayload = MySQLPacket.decodeGenericPacket(data).payload
+                    as MySQLPacketEOF;
+                if (eofPayload.statusFlags & mysqlServerFlagMoreResultsExists !=
+                    0) {
+                  state = 0;
+                  colsCount = 0;
+                  colDefs = [];
+                  return;
+                }
                 state = 4;
 
                 _markConnectionEstablished();
-                await sink!.close();
+                closeStream();
+                return;
+              }
+
+              if (discardResults) {
                 return;
               }
 
@@ -895,10 +1094,9 @@ class MySQLConnection {
           final payload = packet.payload;
 
           if (payload is MySQLPacketError) {
-            completer.completeError(
-              MySQLServerException(payload.errorMessage, payload.errorCode),
-            );
+            // Also the error of a later statement of a multi-statement query.
             _markConnectionEstablished();
+            fail(MySQLServerException(payload.errorMessage, payload.errorCode));
             return;
           } else if (payload is MySQLPacketOK || payload is MySQLPacketEOF) {
             // do nothing
@@ -921,7 +1119,7 @@ class MySQLConnection {
             assert(iterable == false);
             resultSetRows.add(payload);
           } else {
-            completer.completeError(
+            fail(
               MySQLClientException(
                 "Unexpected payload received in response to COMM_QUERY request",
               ),
@@ -933,7 +1131,7 @@ class MySQLConnection {
         }
       } catch (e) {
         //print('execute $e $s');
-        completer.completeError(e, StackTrace.current);
+        fail(e, StackTrace.current);
         _forceClose();
       }
     };
@@ -946,15 +1144,75 @@ class MySQLConnection {
   /// Execute [callback] inside database transaction
   ///
   /// If MySQLClientException is thrown inside [callback] function, transaction is rolled back
+  ///
+  /// The transaction holds the connection: commands (and other
+  /// transactions) from other callers wait until it commits or rolls back,
+  /// then run in call order. Commands issued from [callback], including
+  /// concurrent ones, run inside the transaction. Do not wait, inside
+  /// [callback], for work started outside it that uses this connection: that
+  /// work waits for the transaction, which waits for it.
+  ///
+  /// A `START TRANSACTION` sent with [execute] gets no such protection:
+  /// other callers' commands run inside it. Use [transactional].
   Future<T> transactional<T>(
       FutureOr<T> Function(MySQLConnection conn) callback) async {
-    if (_inTransaction) {
+    if (_inOwnTransaction ||
+        (!_queueConcurrentCalls && _transactionGate != null)) {
       throw MySQLClientException("Already in transaction");
     }
-    // Marked only once START TRANSACTION succeeded, and always cleared: a
-    // failing START or ROLLBACK used to leave "Already in transaction" set.
+    while (_transactionGate != null) {
+      await _transactionGate!.future;
+    }
+    final gate = Completer<void>();
+    _transactionGate = gate;
+    try {
+      return await runZoned(() => _runTransaction(callback),
+          zoneValues: {_transactionZoneKey: gate});
+    } finally {
+      _transactionGate = null;
+      gate.complete();
+    }
+  }
+
+  bool get _inOwnTransaction =>
+      _transactionGate != null &&
+      identical(Zone.current[_transactionZoneKey], _transactionGate);
+
+  /// Runs [command] in its turn (see [_commandTail]). Outside the running
+  /// transaction, waits for it first.
+  Future<T> _serialized<T>(Future<T> Function() command) async {
+    if (!_queueConcurrentCalls) return command();
+    // No await before the command is queued when there is no transaction:
+    // the call order is the execution order.
+    while (_transactionGate != null && !_inOwnTransaction) {
+      await _transactionGate!.future;
+    }
+    final previous = _commandTail;
+    final turn = Completer<void>();
+    _commandTail = turn.future;
+    try {
+      await previous;
+      return await command();
+    } finally {
+      _releaseTurnWhenIdle(turn);
+    }
+  }
+
+  void _releaseTurnWhenIdle(Completer<void> turn) {
+    if (_connected && _state == _MySQLConnectionState.waitingCommandResponse) {
+      // An iterable result set is still streaming its rows.
+      _waitForState(_MySQLConnectionState.connectionEstablished)
+          .then((_) {}, onError: (_) {})
+          .whenComplete(turn.complete);
+    } else {
+      turn.complete();
+    }
+  }
+
+  Future<T> _runTransaction<T>(
+      FutureOr<T> Function(MySQLConnection conn) callback) async {
+    // A failing START or ROLLBACK leaves no transaction state behind.
     await execute("START TRANSACTION");
-    _inTransaction = true;
 
     try {
       final result = await callback(this);
@@ -970,8 +1228,6 @@ class MySQLConnection {
         _forceClose();
       }
       Error.throwWithStackTrace(e, stackTrace);
-    } finally {
-      _inTransaction = false;
     }
   }
 
@@ -1162,7 +1418,7 @@ class MySQLConnection {
     }
 
     _autoPreparedCacheMisses++;
-    final stmt = await prepare(query, iterable);
+    final stmt = await _prepare(query, iterable);
     _autoPreparedStmtCache[key] = stmt;
 
     if (_autoPreparedStmtCache.length > _autoPreparedStmtCacheCapacity) {
@@ -1257,7 +1513,10 @@ class MySQLConnection {
   /// You shoud call [PreparedStmt.deallocate] when you don't need prepared statement anymore to prevent memory leaks
   ///
   /// Pass [iterable] true if you want to iterable result set. See [execute] for details
-  Future<PreparedStmt> prepare(String query, [bool iterable = false]) async {
+  Future<PreparedStmt> prepare(String query, [bool iterable = false]) =>
+      _serialized(() => _prepare(query, iterable));
+
+  Future<PreparedStmt> _prepare(String query, bool iterable) async {
     if (!_connected) {
       throw MySQLClientException("Can not prepare stmt: connection closed");
     }
@@ -1297,6 +1556,10 @@ class MySQLConnection {
     int numOfEofPacketsParsed = 0;
     MySQLPacketStmtPrepareOK? preparedPacket;
 
+    ++_commandSerial;
+    _abortCommand = (Object error, [StackTrace? stackTrace]) {
+      if (!completer.isCompleted) completer.completeError(error, stackTrace);
+    };
     _responseCallback = (data) async {
       try {
         MySQLPacket? packet;
@@ -1351,6 +1614,18 @@ class MySQLConnection {
 
           if (payload is MySQLPacketStmtPrepareOK) {
             preparedPacket = payload;
+            if (payload.numOfCols == 0 && payload.numOfParams == 0) {
+              // No definitions and no EOF follow (DDL, INSERT without
+              // placeholders, ...): prepare() used to wait forever for them.
+              state = 2;
+              _markConnectionEstablished();
+              completer.complete(PreparedStmt._(
+                preparedPacket: payload,
+                connection: this,
+                iterable: iterable,
+              ));
+              return;
+            }
           } else if (payload is MySQLPacketError) {
             completer.completeError(
               MySQLServerException(payload.errorMessage, payload.errorCode),
@@ -1439,6 +1714,60 @@ class MySQLConnection {
     IterablePreparedStmtResultSet? iterableResultSet;
     StreamSink<ResultSetRow>? sink;
 
+    // A CALL replies with its result sets and a final OK. Non-iterable
+    // results are chained through `next`; an iterable result streams the
+    // first one and the others are read and discarded. They used to be left
+    // unread, and the next command got them as its reply.
+    IResultSet? currentResultSet;
+    IResultSet? firstResultSet;
+    var discardResults = false;
+    var streamClosed = false;
+
+    void addResult(IResultSet resultSet) {
+      if (currentResultSet != null) {
+        currentResultSet!.next = resultSet;
+      } else {
+        firstResultSet = resultSet;
+      }
+      currentResultSet = resultSet;
+    }
+
+    void closeStream() {
+      if (sink != null && !streamClosed) {
+        streamClosed = true;
+        unawaited(sink!.close());
+      }
+    }
+
+    void fail(Object error, [StackTrace? stackTrace]) {
+      if (!completer.isCompleted) {
+        completer.completeError(error, stackTrace);
+      } else if (sink != null && !streamClosed) {
+        sink!.addError(error, stackTrace);
+        closeStream();
+      }
+    }
+
+    // Ends the command, or waits for the next result.
+    void endResult(int statusFlags) {
+      if (statusFlags & mysqlServerFlagMoreResultsExists != 0) {
+        state = 0;
+        colsCount = 0;
+        colDefs = [];
+        resultSetRows = [];
+        return;
+      }
+      state = 4;
+      _markConnectionEstablished();
+      if (iterable) {
+        closeStream();
+      } else {
+        completer.complete(firstResultSet);
+      }
+    }
+
+    final command = ++_commandSerial;
+    _abortCommand = fail;
     _responseCallback = (data) async {
       try {
         MySQLPacket? packet;
@@ -1449,11 +1778,16 @@ class MySQLConnection {
             if (MySQLPacket.detectPacketType(data) ==
                 MySQLGenericPacketType.ok) {
               final okPacket = MySQLPacket.decodeGenericPacket(data);
-              _markConnectionEstablished();
-
-              completer.complete(
-                EmptyResultSet(okPacket: okPacket.payload as MySQLPacketOK),
-              );
+              final ok = okPacket.payload as MySQLPacketOK;
+              if (!discardResults) {
+                if (iterable) {
+                  completer.complete(EmptyResultSet(okPacket: ok));
+                  discardResults = true;
+                } else {
+                  addResult(EmptyResultSet(okPacket: ok));
+                }
+              }
+              endResult(ok.statusFlags);
 
               return;
             }
@@ -1469,14 +1803,14 @@ class MySQLConnection {
               state = 3;
             } else if (packet.isErrorPacket()) {
               final errorPayload = packet.payload as MySQLPacketError;
-              completer.completeError(
+              _markConnectionEstablished();
+              fail(
                 MySQLServerException(
                     errorPayload.errorMessage, errorPayload.errorCode),
               );
-              _markConnectionEstablished();
               return;
             } else {
-              completer.completeError(
+              fail(
                 MySQLClientException("Unexcpected packet type"),
                 StackTrace.current,
               );
@@ -1495,23 +1829,30 @@ class MySQLConnection {
               final exception =
                   MySQLServerException(error.errorMessage, error.errorCode);
               _markConnectionEstablished();
-              if (sink != null) {
-                sink!.addError(exception);
-                await sink!.close();
-              } else if (!completer.isCompleted) {
-                completer.completeError(exception);
-              }
+              fail(exception);
               return;
             }
             if (iterable) {
-              if (iterableResultSet == null) {
+              if (!discardResults && iterableResultSet == null) {
                 iterableResultSet = IterablePreparedStmtResultSet._(
                   columns: colDefs,
-                  onPause: () => _socketSubscription?.pause(),
-                  onResume: () => _socketSubscription?.resume(),
+                  // Backpressure while this result set streams; see
+                  // _pauseSocketForResultSet.
+                  onPause: () {
+                    if (command == _commandSerial &&
+                        _state ==
+                            _MySQLConnectionState.waitingCommandResponse) {
+                      _pauseSocketForResultSet();
+                    }
+                  },
+                  onResume: _resumeSocketForResultSet,
+                  // Only while this result set is still streaming: once it
+                  // ended, the connection may be running the next command
+                  // (queued meanwhile), which must not be killed.
                   onCancel: () {
-                    if (_state ==
-                        _MySQLConnectionState.waitingCommandResponse) {
+                    if (command == _commandSerial &&
+                        _state ==
+                            _MySQLConnectionState.waitingCommandResponse) {
                       _forceClose();
                     }
                   },
@@ -1524,10 +1865,14 @@ class MySQLConnection {
               // check eof
               if (MySQLPacket.detectPacketType(data) ==
                   MySQLGenericPacketType.eof) {
-                state = 4;
+                discardResults = true;
+                final eofPayload = MySQLPacket.decodeGenericPacket(data).payload
+                    as MySQLPacketEOF;
+                endResult(eofPayload.statusFlags);
+                return;
+              }
 
-                _markConnectionEstablished();
-                await sink!.close();
+              if (discardResults) {
                 return;
               }
 
@@ -1551,19 +1896,17 @@ class MySQLConnection {
               // check eof
               if (MySQLPacket.detectPacketType(data) ==
                   MySQLGenericPacketType.eof) {
-                state = 4;
-
                 final resultSetPacket = MySQLPacketBinaryResultSet(
                   columnCount: BigInt.from(colsCount),
                   columns: colDefs,
                   rows: resultSetRows,
                 );
+                addResult(
+                    PreparedStmtResultSet._(resultSetPacket: resultSetPacket));
 
-                _markConnectionEstablished();
-
-                completer.complete(
-                  PreparedStmtResultSet._(resultSetPacket: resultSetPacket),
-                );
+                final eofPayload = MySQLPacket.decodeGenericPacket(data).payload
+                    as MySQLPacketEOF;
+                endResult(eofPayload.statusFlags);
 
                 return;
               }
@@ -1582,10 +1925,8 @@ class MySQLConnection {
           final payload = packet.payload;
 
           if (payload is MySQLPacketError) {
-            completer.completeError(
-              MySQLServerException(payload.errorMessage, payload.errorCode),
-            );
             _markConnectionEstablished();
+            fail(MySQLServerException(payload.errorMessage, payload.errorCode));
             return;
           } else if (payload is MySQLPacketOK || payload is MySQLPacketEOF) {
             // do nothing
@@ -1607,7 +1948,7 @@ class MySQLConnection {
           } else if (payload is MySQLBinaryResultSetRowPacket) {
             resultSetRows.add(payload);
           } else {
-            completer.completeError(
+            fail(
               MySQLClientException(
                 "Unexpected payload received in response to COMM_QUERY request",
               ),
@@ -1618,7 +1959,7 @@ class MySQLConnection {
           }
         }
       } catch (e) {
-        completer.completeError(e, StackTrace.current);
+        fail(e, StackTrace.current);
         _forceClose();
       }
     };
@@ -1742,10 +2083,17 @@ class MySQLConnection {
       payloadLength: 0,
     );
 
-    if (!_connected && _state == _MySQLConnectionState.connectionEstablished) {
+    if (_state == _MySQLConnectionState.closed) {
+      // Already closed by the driver (cancelled stream, broken connection).
+      return;
+    }
+
+    if (!_connected &&
+        (_state == _MySQLConnectionState.connectionEstablished ||
+            _state == _MySQLConnectionState.waitingCommandResponse)) {
       // The server already closed the socket (KILL, restart, network). There
       // is nothing to send; flushing the destroyed socket never completed,
-      // so close() used to hang.
+      // so close() used to hang (or threw, when it happened mid-command).
       _forceClose();
       return;
     }
@@ -1782,7 +2130,6 @@ class MySQLConnection {
 
     _onCloseCallbacks.clear();
     _responseCallback = null;
-    _inTransaction = false;
     _pendingPacketBytes = null;
     _lastError = null;
     _autoPreparedStmtCache.clear();
@@ -1802,6 +2149,8 @@ class MySQLConnection {
     _failConnectionEstablishedWaiters(
       _lastError ?? MySQLClientException("Connection closed"),
     );
+    _abortPendingCommand(
+        _lastError ?? MySQLClientException("Connection closed"));
 
     for (var element in _onCloseCallbacks) {
       element();
@@ -1809,7 +2158,6 @@ class MySQLConnection {
 
     _onCloseCallbacks.clear();
     _responseCallback = null;
-    _inTransaction = false;
     _pendingPacketBytes = null;
     _lastError = null;
     _autoPreparedStmtCache.clear();
@@ -2349,7 +2697,8 @@ class PreparedStmt {
       );
     }
 
-    return _connection._executePreparedStmt(this, params, _iterable);
+    return _connection._serialized(
+        () => _connection._executePreparedStmt(this, params, _iterable));
   }
 
   /// Deallocates this prepared statement
@@ -2357,7 +2706,8 @@ class PreparedStmt {
   /// Use this method to prevent memory leaks for long running connections
   /// All prepared statements are automatically deallocated by database when connection is closed
   Future<void> deallocate() {
-    return _connection._deallocatePreparedStmt(this);
+    return _connection
+        ._serialized(() => _connection._deallocatePreparedStmt(this));
   }
 }
 

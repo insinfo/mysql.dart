@@ -381,8 +381,11 @@ Tuple2<dynamic, int> parseBinaryColumnData(
           startOffset += 4;
         }
 
+        // Zero-padded like the text protocol: an unpadded year (999) failed
+        // DateTime.parse, and unpadded microseconds (5000 -> ".5000") read
+        // as half a second.
         final result = StringBuffer()
-          ..write('$year-')
+          ..write('${year.toString().padLeft(4, '0')}-')
           ..write('${month.toString().padLeft(2, '0')}-')
           ..write('${day.toString().padLeft(2, '0')} ')
           ..write('${hour.toString().padLeft(2, '0')}:')
@@ -390,7 +393,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
           ..write(second.toString().padLeft(2, '0'));
 
         if (numOfBytes >= 11) {
-          result.write('.$microSecond');
+          result.write('.${microSecond.toString().padLeft(6, '0')}');
         }
 
         final consumed = startOffset - initialOffset;
@@ -440,7 +443,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         timeResult.write(seconds.toString().padLeft(2, '0'));
 
         if (numOfBytes >= 12) {
-          timeResult.write('.${microSecond.toString()}');
+          timeResult.write('.${microSecond.toString().padLeft(6, '0')}');
         }
 
         final consumed = startOffset - initialOffset;

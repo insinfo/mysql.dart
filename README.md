@@ -324,7 +324,7 @@ If your query contains multiple statements, result will contain **next** propert
 
 IResulSet class implements Iterable<IResulSet> interface, so you can iterate throw all result sets using for..in loop.
 
-**Multple statements are not supported for prepared statements and iterable result sets.**
+**Multple statements are not supported for prepared statements and iterable result sets.** A `CALL` (which replies with its result sets and a final OK) works with prepared statements too, through **next**. An iterable result set streams the first result only; the results after it are read and discarded.
 
 For example:
 

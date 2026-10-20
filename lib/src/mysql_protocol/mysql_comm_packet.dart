@@ -146,7 +146,13 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
   @override
   Uint8List encode() => _encode(0, 0);
 
-  Uint8List encodePacket(int sequenceID) => _encode(4, sequenceID);
+  Uint8List encodePacket(int sequenceID) {
+    final packet = _encode(4, sequenceID);
+    if (packet.length - 4 < mysqlMaxPacketPayloadLength) {
+      return packet;
+    }
+    return frameLargePayload(Uint8List.sublistView(packet, 4), sequenceID);
+  }
 
   Uint8List _encode(int packetHeaderSize, int sequenceID) {
     final paramCount = params.length;

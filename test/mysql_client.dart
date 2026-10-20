@@ -312,16 +312,22 @@ create table book
     }
   });
 
-  test("testing error is thrown if prevent double transaction", () async {
+  test("concurrent transactions run one after the other", () async {
+    await Future.wait([
+      conn.transactional<void>((conn) async {
+        await conn.execute("SELECT * FROM book");
+      }),
+      conn.transactional<void>((conn) async {
+        await conn.execute("SELECT * FROM book");
+      }),
+    ]);
+  });
+
+  test("testing error is thrown on a nested transaction", () async {
     try {
-      await Future.wait([
-        conn.transactional<void>((conn) async {
-          await conn.execute("SELECT * FROM book");
-        }),
-        conn.transactional<void>((conn) async {
-          await conn.execute("SELECT * FROM book");
-        }),
-      ]);
+      await conn.transactional<void>((conn) async {
+        await conn.transactional<void>((conn) async {});
+      });
       fail("Exception is not thrown");
     } catch (e) {
       expect(e, isA<MySQLClientException>());
