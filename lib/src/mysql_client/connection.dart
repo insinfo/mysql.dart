@@ -272,7 +272,8 @@ class MySQLConnection {
     _failConnectionEstablishedWaiters(
       MySQLClientException("Connection closed"),
     );
-    _abortPendingCommand(_lastError ?? MySQLClientException("Connection closed"));
+    _abortPendingCommand(
+        _lastError ?? MySQLClientException("Connection closed"));
     _socket.destroy();
 
     for (var element in _onCloseCallbacks) {
@@ -291,6 +292,15 @@ class MySQLConnection {
   }
 
   void _listenToSocket() {
+    // A write to a connection the server already closed (wait_timeout, KILL)
+    // fails with "Connection reset by peer", reported on the socket's done
+    // future; unobserved, it was an uncaught error in the caller's zone
+    // (seen on Linux, where the server resets the closed connection). The
+    // read side reports the same failure through onError below, which fails
+    // the command.
+    unawaited(_socket.done.then<void>((_) {}, onError: (Object error) {
+      _lastError ??= error;
+    }));
     _socketSubscription = _socket.listen(
       (data) {
         for (final chunk in _splitPackets(data)) {
@@ -1463,8 +1473,9 @@ class MySQLConnection {
   /// refer to tables whose columns changed, and MySQL keeps the parameter
   /// types derived when they were prepared. They are closed and prepared
   /// again on their next use.
-  static final _schemaChange =
-      RegExp(r'^\s*(create|alter|drop|rename|truncate)\b', caseSensitive: false);
+  static final _schemaChange = RegExp(
+      r'^\s*(create|alter|drop|rename|truncate)\b',
+      caseSensitive: false);
 
   void _invalidateAutoPreparedStmts() {
     for (final stmt in _autoPreparedStmtCache.values) {
