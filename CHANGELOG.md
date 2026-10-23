@@ -1,3 +1,7 @@
+## 3.0.3
+
+- fix: `typedAssoc()`, `typedColAt<DateTime>()` and `typedColByName<DateTime>()` turned a date `DateTime` cannot represent into another day: the zero date `0000-00-00` (WordPress drafts, `sql_mode` without NO_ZERO_DATE) came back as `-0001-11-30`, a zero month or day (`2024-05-00`) as the previous month's last day, and an invalid date stored under ALLOW_INVALID_DATES (`2024-02-30`) as March 1. They now return `null`; `colAt()` and `assoc()` still return the server's text
+
 ## 3.0.2
 
 - fix: a write to a connection the server already closed (`wait_timeout`, `KILL`) failed with "Connection reset by peer" (Linux) on the socket's `done` future, which was not observed: it became an uncaught error in the caller's zone (an application's error handler, a failing test), although the command itself already failed with the read-side error. The future is observed now; the command still fails with the error, and the pool replaces the connection
