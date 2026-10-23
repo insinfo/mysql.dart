@@ -383,10 +383,55 @@ void main() {
           await roundTrip('datetime(6)', literals: ["'0000-00-00 00:00:00'"]);
       expect(dt.single.textRaw, '0000-00-00 00:00:00.000000');
       expect(dt.single.binaryRaw, '0000-00-00 00:00:00');
-      // typedAssoc() cannot represent a zero date; DateTime.parse turns it
-      // into -0001-11-30 (documented limitation, not an error).
-      expect(dt.single.textTyped, isA<DateTime>());
-      expect(dt.single.binaryTyped, dt.single.textTyped);
+      // DateTime cannot represent a zero date: DateTime.parse turned it into
+      // -0001-11-30. Typed reads return null; the raw text stays.
+      expectTyped(date, [null], sameRaw: false);
+      expectTyped(dt, [null], sameRaw: false);
+      final ts = await roundTrip('timestamp null',
+          literals: ["'0000-00-00 00:00:00'"]);
+      expectTyped(ts, [null], sameRaw: false);
+    });
+
+    test('dates with a zero month or day are null when typed', () async {
+      final reads = await roundTrip('datetime',
+          literals: ["'2024-00-00 10:00:00'", "'2024-05-00 10:00:00'"]);
+      expect(reads.map((r) => r.textRaw),
+          ['2024-00-00 10:00:00', '2024-05-00 10:00:00']);
+      // They were read as 2023-11-30 and 2024-04-30.
+      expectTyped(reads, [null, null]);
+    });
+
+    test('invalid dates (ALLOW_INVALID_DATES) are null when typed', () async {
+      await conn.execute("set session sql_mode = 'ALLOW_INVALID_DATES'");
+      try {
+        final reads = await roundTrip('date', literals: ["'2024-02-30'"]);
+        expect(reads.single.textRaw, '2024-02-30');
+        // It was read as 2024-03-01.
+        expectTyped(reads, [null], sameRaw: false);
+      } finally {
+        await conn.execute("set session sql_mode = ''");
+      }
+    });
+
+    test('typedColAt and typedColByName return null for a zero date', () async {
+      await roundTrip('datetime',
+          literals: ["'0000-00-00 00:00:00'", "'2024-03-10 12:34:56'"]);
+      for (final params in [
+        null,
+        <Object?>[0]
+      ]) {
+        final result = await conn.execute(
+            params == null
+                ? 'select v from $_table order by id'
+                : 'select v from $_table where id > ? order by id',
+            params);
+        final rows = result.rows.toList();
+        expect(rows[0].typedColAt<DateTime>(0), isNull);
+        expect(rows[0].typedColByName<DateTime>('v'), isNull);
+        expect(rows[0].colAt(0), '0000-00-00 00:00:00');
+        expect(
+            rows[1].typedColAt<DateTime>(0), DateTime(2024, 3, 10, 12, 34, 56));
+      }
     });
   });
 

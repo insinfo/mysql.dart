@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
 import 'package:mysql_dart/src/utils/tuple2.dart';
 
 /// Constantes que representam os tipos de coluna do MySQL conforme o protocolo.
@@ -193,7 +194,7 @@ class MySQLColumnType {
         case mysqlColumnTypeDateTime:
         case mysqlColumnTypeTimestamp:
         case mysqlColumnTypeTimestamp2:
-          return DateTime.parse(value) as T;
+          return parseMySqlDateTime(value) as T?;
         default:
           throw MySQLProtocolException(
             "Cannot convert MySQL type $_value to requested type DateTime",

@@ -2634,7 +2634,7 @@ class ResultSetRow {
       if (value is DateTime) {
         return value;
       }
-      return DateTime.parse(value.toString());
+      return parseMySqlDateTime(value.toString());
     }
 
     return value;

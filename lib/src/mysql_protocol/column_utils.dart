@@ -35,3 +35,23 @@ bool columnShouldBeBinary(MySQLColumnDefinitionPacket colDef) {
 bool columnShouldBeTextual(MySQLColumnDefinitionPacket colDef) {
   return _isBlobFamily(colDef.type) && !columnShouldBeBinary(colDef);
 }
+
+/// Parses a DATE, DATETIME or TIMESTAMP value as the server sends it
+/// (`2024-03-10`, `2024-03-10 12:34:56`, `2024-03-10 12:34:56.000001`).
+///
+/// Returns null for a date [DateTime] cannot represent, which
+/// `DateTime.parse` would silently roll over to another day: the zero date
+/// `0000-00-00` (`-0001-11-30`), a date with a zero month or day
+/// (`2024-00-00`, allowed without NO_ZERO_IN_DATE) and an invalid date stored
+/// under ALLOW_INVALID_DATES (`2024-02-30`, read as March 1). The text is
+/// still available through `colAt()` and `assoc()`.
+DateTime? parseMySqlDateTime(String text) {
+  final value = DateTime.parse(text);
+  if (text.length >= 10 &&
+      (value.year != int.parse(text.substring(0, 4)) ||
+          value.month != int.parse(text.substring(5, 7)) ||
+          value.day != int.parse(text.substring(8, 10)))) {
+    return null;
+  }
+  return value;
+}
