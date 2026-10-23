@@ -194,7 +194,7 @@ class MySQLColumnType {
         case mysqlColumnTypeDateTime:
         case mysqlColumnTypeTimestamp:
         case mysqlColumnTypeTimestamp2:
-          return parseMySqlDateTime(value) as T?;
+          return tryParseMySqlDateTime(value) as T?;
         default:
           throw MySQLProtocolException(
             "Cannot convert MySQL type $_value to requested type DateTime",

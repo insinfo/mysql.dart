@@ -37,21 +37,76 @@ bool columnShouldBeTextual(MySQLColumnDefinitionPacket colDef) {
 }
 
 /// Parses a DATE, DATETIME or TIMESTAMP value as the server sends it
-/// (`2024-03-10`, `2024-03-10 12:34:56`, `2024-03-10 12:34:56.000001`).
+/// (`2024-03-10`, `2024-03-10 12:34:56`, `2024-03-10 12:34:56.123456`; the
+/// fraction has 1 to 6 digits), reading each field once.
 ///
-/// Returns null for a date [DateTime] cannot represent, which
-/// `DateTime.parse` would silently roll over to another day: the zero date
-/// `0000-00-00` (`-0001-11-30`), a date with a zero month or day
-/// (`2024-00-00`, allowed without NO_ZERO_IN_DATE) and an invalid date stored
-/// under ALLOW_INVALID_DATES (`2024-02-30`, read as March 1). The text is
-/// still available through `colAt()` and `assoc()`.
-DateTime? parseMySqlDateTime(String text) {
-  final value = DateTime.parse(text);
-  if (text.length >= 10 &&
-      (value.year != int.parse(text.substring(0, 4)) ||
-          value.month != int.parse(text.substring(5, 7)) ||
-          value.day != int.parse(text.substring(8, 10)))) {
+/// Returns null for a date [DateTime] cannot represent: the zero date
+/// `0000-00-00`, a zero month or day (`2024-05-00`, allowed without
+/// NO_ZERO_IN_DATE) and an invalid date stored under ALLOW_INVALID_DATES
+/// (`2024-02-30`). `DateTime.parse` rolled those over to another day
+/// (`-0001-11-30`, `2024-04-30`, `2024-03-01`). Throws a [FormatException]
+/// for text in any other format.
+DateTime? tryParseMySqlDateTime(String text) {
+  final length = text.length;
+  if (length < 10 ||
+      text.codeUnitAt(4) != _dash ||
+      text.codeUnitAt(7) != _dash) {
+    throw FormatException('Invalid MySQL date', text);
+  }
+  final year = _digits(text, 0, 4);
+  final month = _digits(text, 5, 7);
+  final day = _digits(text, 8, 10);
+
+  var hour = 0, minute = 0, second = 0, microsecond = 0;
+  if (length > 10) {
+    if (length < 19 ||
+        text.codeUnitAt(10) != _space ||
+        text.codeUnitAt(13) != _colon ||
+        text.codeUnitAt(16) != _colon) {
+      throw FormatException('Invalid MySQL date', text);
+    }
+    hour = _digits(text, 11, 13);
+    minute = _digits(text, 14, 16);
+    second = _digits(text, 17, 19);
+    if (length > 19) {
+      if (length == 20 || length > 26 || text.codeUnitAt(19) != _dot) {
+        throw FormatException('Invalid MySQL date', text);
+      }
+      // '.5' is half a second: scale the fraction to microseconds.
+      microsecond = _digits(text, 20, length) * _powersOf10[26 - length];
+    }
+    if (hour > 23 || minute > 59 || second > 59) {
+      throw FormatException('Invalid MySQL date', text);
+    }
+  }
+
+  if (month < 1 || month > 12 || day < 1 || day > _daysInMonth(year, month)) {
     return null;
   }
+  return DateTime(year, month, day, hour, minute, second, microsecond ~/ 1000,
+      microsecond % 1000);
+}
+
+const _dash = 0x2d, _space = 0x20, _colon = 0x3a, _dot = 0x2e, _zero = 0x30;
+const _powersOf10 = [1, 10, 100, 1000, 10000, 100000];
+
+/// The decimal number in `text[start, end)`, digits only.
+int _digits(String text, int start, int end) {
+  var value = 0;
+  for (var i = start; i < end; i++) {
+    final digit = text.codeUnitAt(i) - _zero;
+    if (digit < 0 || digit > 9) {
+      throw FormatException('Invalid MySQL date', text, i);
+    }
+    value = value * 10 + digit;
+  }
   return value;
+}
+
+int _daysInMonth(int year, int month) {
+  if (month == 2) {
+    final leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    return leap ? 29 : 28;
+  }
+  return const [31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }

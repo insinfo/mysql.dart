@@ -1,6 +1,7 @@
 ## 3.0.3
 
-- fix: `typedAssoc()`, `typedColAt<DateTime>()` and `typedColByName<DateTime>()` turned a date `DateTime` cannot represent into another day: the zero date `0000-00-00` (WordPress drafts, `sql_mode` without NO_ZERO_DATE) came back as `-0001-11-30`, a zero month or day (`2024-05-00`) as the previous month's last day, and an invalid date stored under ALLOW_INVALID_DATES (`2024-02-30`) as March 1. They now return `null`; `colAt()` and `assoc()` still return the server's text
+- fix: `typedAssoc()`, `typedColAt<DateTime>()` and `typedColByName<DateTime>()` turned a date `DateTime` cannot represent into another day, because `DateTime.parse` rolls an out-of-range month or day over: the zero date `0000-00-00` (WordPress drafts, `sql_mode` without NO_ZERO_DATE) came back as `-0001-11-30`, a zero month or day (`2024-05-00`) as the previous month's last day, and an invalid date stored under ALLOW_INVALID_DATES (`2024-02-30`) as March 1. Dates are now parsed strictly (the server's `YYYY-MM-DD[ hh:mm:ss[.ffffff]]`), and such a date is handled by the new `zeroDateBehavior` option
+- feat: `zeroDateBehavior` in `MySQLConnection.createConnection` and `MySQLConnectionPool`: `ZeroDateBehavior.convertToNull` (default) returns `null`, `ZeroDateBehavior.exception` throws a `MySQLClientException` naming the value (Connector/J's `zeroDateTimeBehavior`). `colAt()` and `assoc()` still return the server's text
 
 ## 3.0.2
 

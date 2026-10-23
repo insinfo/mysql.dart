@@ -6,6 +6,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:test/test.dart';
@@ -432,6 +433,74 @@ void main() {
         expect(
             rows[1].typedColAt<DateTime>(0), DateTime(2024, 3, 10, 12, 34, 56));
       }
+    });
+
+    test('zeroDateBehavior.exception throws in typed reads', () async {
+      await roundTrip('datetime',
+          literals: ["'0000-00-00 00:00:00'", "'2024-03-10 12:34:56'"]);
+      final strict = await MySQLConnection.createConnection(
+        host: mysqlTestHost,
+        port: mysqlTestPort,
+        userName: mysqlTestUser,
+        password: mysqlTestPassword,
+        databaseName: mysqlTestDatabase,
+        secure: mysqlTestSecure,
+        zeroDateBehavior: ZeroDateBehavior.exception,
+      );
+      await strict.connect();
+      try {
+        for (final params in [
+          null,
+          <Object?>[0]
+        ]) {
+          final result = await strict.execute(
+              params == null
+                  ? 'select v from $_table order by id'
+                  : 'select v from $_table where id > ? order by id',
+              params);
+          final rows = result.rows.toList();
+          final zero = rows[0];
+          expect(zero.typedAssoc, throwsA(isA<MySQLClientException>()));
+          expect(() => zero.typedColAt<DateTime>(0),
+              throwsA(isA<MySQLClientException>()));
+          expect(() => zero.typedColByName<DateTime>('v'),
+              throwsA(isA<MySQLClientException>()));
+          expect(zero.colAt(0), '0000-00-00 00:00:00');
+          expect(zero.assoc()['v'], '0000-00-00 00:00:00');
+          expect(rows[1].typedAssoc()['v'], DateTime(2024, 3, 10, 12, 34, 56));
+        }
+        // The connection is still usable after the exception.
+        final ok = await strict.execute('select 1 as one');
+        expect(ok.rows.single.typedAssoc()['one'], 1);
+      } finally {
+        await strict.close();
+      }
+    });
+
+    test('the pool passes zeroDateBehavior to its connections', () async {
+      await roundTrip('date', literals: ["'0000-00-00'"]);
+      Future<Object?> read(ZeroDateBehavior behavior) async {
+        final pool = MySQLConnectionPool(
+          host: mysqlTestHost,
+          port: mysqlTestPort,
+          userName: mysqlTestUser,
+          password: mysqlTestPassword,
+          databaseName: mysqlTestDatabase,
+          secure: mysqlTestSecure,
+          maxConnections: 1,
+          zeroDateBehavior: behavior,
+        );
+        try {
+          final result = await pool.execute('select v from $_table');
+          return result.rows.first.typedAssoc()['v'];
+        } finally {
+          await pool.close();
+        }
+      }
+
+      expect(await read(ZeroDateBehavior.convertToNull), isNull);
+      expect(() => read(ZeroDateBehavior.exception),
+          throwsA(isA<MySQLClientException>()));
     });
   });
 

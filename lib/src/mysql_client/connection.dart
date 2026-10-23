@@ -7,6 +7,7 @@ import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
 import 'caching_sha2_auth.dart';
+import 'zero_date_behavior.dart';
 
 enum _MySQLConnectionState {
   fresh,
@@ -85,6 +86,9 @@ class MySQLConnection {
   /// See `queueConcurrentCalls` in [createConnection].
   final bool _queueConcurrentCalls;
 
+  /// See `zeroDateBehavior` in [createConnection].
+  final ZeroDateBehavior _zeroDateBehavior;
+
   /// Server thread id of this connection (handshake), used by KILL QUERY.
   int _serverConnectionId = 0;
   final bool _secure;
@@ -129,8 +133,10 @@ class MySQLConnection {
     String? serverPublicKey,
     int autoPreparedStatementCacheCapacity = 32,
     bool queueConcurrentCalls = true,
+    ZeroDateBehavior zeroDateBehavior = ZeroDateBehavior.convertToNull,
   })  : _socket = socket,
         _queueConcurrentCalls = queueConcurrentCalls,
+        _zeroDateBehavior = zeroDateBehavior,
         _username = username,
         _password = password,
         _databaseName = databaseName,
@@ -165,6 +171,10 @@ class MySQLConnection {
   /// fails with "connection is busy with another command" and a second
   /// [transactional] with "Already in transaction" (the 3.0.0 behavior,
   /// useful to detect a connection shared by mistake).
+  ///
+  /// [zeroDateBehavior] (default [ZeroDateBehavior.convertToNull]): what the
+  /// typed reads return for a date [DateTime] cannot represent, such as the
+  /// zero date `0000-00-00`; [ZeroDateBehavior.exception] throws instead.
   static Future<MySQLConnection> createConnection({
     required dynamic host,
     required int port,
@@ -179,6 +189,7 @@ class MySQLConnection {
     String? serverPublicKey,
     int autoPreparedStatementCacheCapacity = 32,
     bool queueConcurrentCalls = true,
+    ZeroDateBehavior zeroDateBehavior = ZeroDateBehavior.convertToNull,
   }) async {
     if (autoPreparedStatementCacheCapacity < 1) {
       throw ArgumentError.value(
@@ -208,6 +219,7 @@ class MySQLConnection {
       serverPublicKey: serverPublicKey,
       autoPreparedStatementCacheCapacity: autoPreparedStatementCacheCapacity,
       queueConcurrentCalls: queueConcurrentCalls,
+      zeroDateBehavior: zeroDateBehavior,
     );
 
     // Armazena os parâmetros de SSL no cliente (adicione esses campos na classe)
@@ -994,6 +1006,7 @@ class MySQLConnection {
               if (!discardResults && iterableResultSet == null) {
                 iterableResultSet = IterableResultSet._(
                   columns: colDefs,
+                  zeroDateBehavior: _zeroDateBehavior,
                   // Backpressure while this result set streams; see
                   // _pauseSocketForResultSet.
                   onPause: () {
@@ -1068,7 +1081,10 @@ class MySQLConnection {
                   rows: resultSetRows,
                 );
 
-                final resultSet = ResultSet._(resultSetPacket: resultSetPacket);
+                final resultSet = ResultSet._(
+                  resultSetPacket: resultSetPacket,
+                  zeroDateBehavior: _zeroDateBehavior,
+                );
 
                 if (currentResultSet != null) {
                   currentResultSet!.next = resultSet;
@@ -1883,6 +1899,7 @@ class MySQLConnection {
               if (!discardResults && iterableResultSet == null) {
                 iterableResultSet = IterablePreparedStmtResultSet._(
                   columns: colDefs,
+                  zeroDateBehavior: _zeroDateBehavior,
                   // Backpressure while this result set streams; see
                   // _pauseSocketForResultSet.
                   onPause: () {
@@ -1948,8 +1965,10 @@ class MySQLConnection {
                   columns: colDefs,
                   rows: resultSetRows,
                 );
-                addResult(
-                    PreparedStmtResultSet._(resultSetPacket: resultSetPacket));
+                addResult(PreparedStmtResultSet._(
+                  resultSetPacket: resultSetPacket,
+                  zeroDateBehavior: _zeroDateBehavior,
+                ));
 
                 final eofPayload = MySQLPacket.decodeGenericPacket(data).payload
                     as MySQLPacketEOF;
@@ -2294,12 +2313,15 @@ abstract class IResultSet
 /// Represents result of [MySQLConnection.execute] method
 class ResultSet extends IResultSet {
   final MySQLPacketResultSet _resultSetPacket;
+  final ZeroDateBehavior _zeroDateBehavior;
   late final _ResultSetMetadata _metadata =
-      _ResultSetMetadata(_resultSetPacket.columns);
+      _ResultSetMetadata(_resultSetPacket.columns, _zeroDateBehavior);
 
   ResultSet._({
     required MySQLPacketResultSet resultSetPacket,
-  }) : _resultSetPacket = resultSetPacket;
+    required ZeroDateBehavior zeroDateBehavior,
+  })  : _resultSetPacket = resultSetPacket,
+        _zeroDateBehavior = zeroDateBehavior;
 
   @override
   int get numOfColumns => _resultSetPacket.columns.length;
@@ -2334,10 +2356,11 @@ class IterableResultSet with IterableMixin<IResultSet> implements IResultSet {
 
   IterableResultSet._({
     required List<MySQLColumnDefinitionPacket> columns,
+    required ZeroDateBehavior zeroDateBehavior,
     void Function()? onPause,
     void Function()? onResume,
     FutureOr<void> Function()? onCancel,
-  }) : _metadata = _ResultSetMetadata(columns) {
+  }) : _metadata = _ResultSetMetadata(columns, zeroDateBehavior) {
     _controller = StreamController<ResultSetRow>(
       sync: true,
       onPause: onPause,
@@ -2395,12 +2418,15 @@ class IterableResultSet with IterableMixin<IResultSet> implements IResultSet {
 /// Represents result of [PreparedStmt.execute] method
 class PreparedStmtResultSet extends IResultSet {
   final MySQLPacketBinaryResultSet _resultSetPacket;
+  final ZeroDateBehavior _zeroDateBehavior;
   late final _ResultSetMetadata _metadata =
-      _ResultSetMetadata(_resultSetPacket.columns);
+      _ResultSetMetadata(_resultSetPacket.columns, _zeroDateBehavior);
 
   PreparedStmtResultSet._({
     required MySQLPacketBinaryResultSet resultSetPacket,
-  }) : _resultSetPacket = resultSetPacket;
+    required ZeroDateBehavior zeroDateBehavior,
+  })  : _resultSetPacket = resultSetPacket,
+        _zeroDateBehavior = zeroDateBehavior;
 
   @override
   int get numOfColumns => _resultSetPacket.columns.length;
@@ -2435,10 +2461,11 @@ class IterablePreparedStmtResultSet extends IResultSet {
 
   IterablePreparedStmtResultSet._({
     required List<MySQLColumnDefinitionPacket> columns,
+    required ZeroDateBehavior zeroDateBehavior,
     void Function()? onPause,
     void Function()? onResume,
     FutureOr<void> Function()? onCancel,
-  }) : _metadata = _ResultSetMetadata(columns) {
+  }) : _metadata = _ResultSetMetadata(columns, zeroDateBehavior) {
     _controller = StreamController<ResultSetRow>(
       sync: true,
       onPause: onPause,
@@ -2537,8 +2564,13 @@ class ResultSetRow {
     final value = colAt(colIndex);
     final colDef = _metadata.columns[colIndex];
 
-    return colDef.type
+    final typed = colDef.type
         .convertStringValueToProvidedType<T>(value, colDef.columnLength);
+    // Only a date DateTime cannot represent converts a value to null.
+    if (typed == null && value != null) {
+      return _metadata.unrepresentableDate(value);
+    }
+    return typed;
   }
 
   /// Get column data by column name
@@ -2553,12 +2585,7 @@ class ResultSetRow {
   ///
   /// Throws [MySQLClientException] if conversion is not possible
   T? typedColByName<T>(String columnName) {
-    final colIndex = _metadata.columnIndex(columnName);
-    final value = _values[colIndex];
-    final colDef = _metadata.columns[colIndex];
-
-    return colDef.type
-        .convertStringValueToProvidedType<T>(value, colDef.columnLength);
+    return typedColAt<T>(_metadata.columnIndex(columnName));
   }
 
   /// Get data for all columns
@@ -2634,7 +2661,8 @@ class ResultSetRow {
       if (value is DateTime) {
         return value;
       }
-      return parseMySqlDateTime(value.toString());
+      final text = value.toString();
+      return tryParseMySqlDateTime(text) ?? _metadata.unrepresentableDate(text);
     }
 
     return value;
@@ -2666,7 +2694,20 @@ class _ResultSetMetadata {
     for (var i = 0; i < columns.length; i++) columns[i].name.toLowerCase(): i,
   };
 
-  _ResultSetMetadata(this.columns);
+  /// See `zeroDateBehavior` in [MySQLConnection.createConnection].
+  final ZeroDateBehavior zeroDateBehavior;
+
+  _ResultSetMetadata(this.columns, this.zeroDateBehavior);
+
+  /// The typed value of [value], a date [DateTime] cannot represent.
+  Null unrepresentableDate(Object value) {
+    if (zeroDateBehavior == ZeroDateBehavior.exception) {
+      throw MySQLClientException(
+          'The date "$value" cannot be represented as a DateTime '
+          '(zeroDateBehavior: exception); colAt() and assoc() return the text');
+    }
+    return null;
+  }
 
   int columnIndex(String columnName) {
     final colIndex = _columnIndexesByLowerName[columnName.toLowerCase()];

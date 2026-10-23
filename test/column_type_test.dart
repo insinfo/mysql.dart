@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:mysql_dart/mysql_protocol.dart';
+import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -570,4 +571,71 @@ void main() {
       });
     },
   );
+
+  group('tryParseMySqlDateTime', () {
+    test('dates, date-times and fractions of 1 to 6 digits', () {
+      expect(tryParseMySqlDateTime('2024-03-10'), DateTime(2024, 3, 10));
+      expect(tryParseMySqlDateTime('2024-03-10 12:34:56'),
+          DateTime(2024, 3, 10, 12, 34, 56));
+      expect(tryParseMySqlDateTime('2024-03-10 12:34:56.5'),
+          DateTime(2024, 3, 10, 12, 34, 56, 500));
+      expect(tryParseMySqlDateTime('2024-03-10 12:34:56.005'),
+          DateTime(2024, 3, 10, 12, 34, 56, 5));
+      expect(tryParseMySqlDateTime('2024-03-10 12:34:56.000001'),
+          DateTime(2024, 3, 10, 12, 34, 56, 0, 1));
+      expect(tryParseMySqlDateTime('9999-12-31 23:59:59.999999'),
+          DateTime(9999, 12, 31, 23, 59, 59, 999, 999));
+      expect(tryParseMySqlDateTime('0999-01-01'), DateTime(999, 1, 1));
+    });
+
+    test('the same instant as DateTime.parse for valid dates', () {
+      for (final text in [
+        '2024-02-29',
+        '2023-12-31 23:59:59',
+        '1970-01-01 00:00:00.123456',
+        '2000-02-29 08:00:00.1',
+      ]) {
+        expect(tryParseMySqlDateTime(text), DateTime.parse(text), reason: text);
+      }
+    });
+
+    test('null for a date DateTime cannot represent', () {
+      for (final text in [
+        '0000-00-00',
+        '0000-00-00 00:00:00',
+        '0000-00-00 00:00:00.000000',
+        '2024-00-00 10:00:00',
+        '2024-05-00',
+        '2024-00-10',
+        '2024-02-30',
+        '2023-02-29', // not a leap year
+        '1900-02-29', // not a leap year (divisible by 100)
+        '2024-04-31',
+        '2024-13-01',
+      ]) {
+        expect(tryParseMySqlDateTime(text), isNull, reason: text);
+      }
+      // 2000 is a leap year (divisible by 400).
+      expect(tryParseMySqlDateTime('2000-02-29'), DateTime(2000, 2, 29));
+    });
+
+    test('FormatException for text in another format', () {
+      for (final text in [
+        '',
+        '2024-3-10',
+        '2024/03/10',
+        '2024-03-10T12:34:56',
+        '2024-03-10 12:34',
+        '2024-03-10 12:34:56.',
+        '2024-03-10 12:34:56.1234567',
+        '2024-03-10 24:00:00',
+        '2024-03-10 12:60:00',
+        '2024-0a-10',
+        '12:34:56',
+      ]) {
+        expect(() => tryParseMySqlDateTime(text), throwsFormatException,
+            reason: text);
+      }
+    });
+  });
 }

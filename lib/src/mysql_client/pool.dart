@@ -80,6 +80,7 @@ class MySQLConnectionPool {
   final FutureOr<void> Function(MySQLConnection conn)? onConnectionOpen;
   final MySQLPoolRetryOptions retryOptions;
   final int autoPreparedStatementCacheCapacity;
+  final ZeroDateBehavior zeroDateBehavior;
 
   final List<_PooledConnection> _activeConnections = [];
   final List<_PooledConnection> _idleConnections = [];
@@ -91,6 +92,8 @@ class MySQLConnectionPool {
   /// Almost all parameters are identical to [MySQLConnection.createConnection]
   /// Pass [maxConnections] to tell pool maximum number of connections it can use
   /// You can specify [timeoutMs], it will be passed to [MySQLConnection.connect] method when creating new connections
+  /// [zeroDateBehavior] is passed to every connection; see
+  /// [MySQLConnection.createConnection].
   MySQLConnectionPool({
     required this.host,
     required this.port,
@@ -113,6 +116,7 @@ class MySQLConnectionPool {
     this.onConnectionOpen,
     this.retryOptions = const MySQLPoolRetryOptions(),
     this.autoPreparedStatementCacheCapacity = 32,
+    this.zeroDateBehavior = ZeroDateBehavior.convertToNull,
   }) : _password = password {
     if (autoPreparedStatementCacheCapacity < 1) {
       throw ArgumentError.value(
@@ -268,6 +272,7 @@ class MySQLConnectionPool {
         allowPublicKeyRetrieval: allowPublicKeyRetrieval,
         serverPublicKey: serverPublicKey,
         autoPreparedStatementCacheCapacity: autoPreparedStatementCacheCapacity,
+        zeroDateBehavior: zeroDateBehavior,
       );
 
       await conn.connect(timeoutMs: timeoutMs);
