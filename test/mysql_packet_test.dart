@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/src/utils/hex.dart';
 import 'package:test/test.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
@@ -147,6 +148,82 @@ void main() {
         writer.writeVariableEncInt(9223372036854775807);
         expect(writer.toBytes(),
             [0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]);
+      });
+    });
+
+    group("test decoding 0xfb NULL and truncated payloads", () {
+      test("decoding NULL int value 0xfb", () {
+        final bytes = Uint8List.fromList([0xfb]);
+        final fromBytes = bytes.getVariableEncIntAt(0);
+        expect(fromBytes.item1.toInt(), -1);
+        expect(fromBytes.item2, 1);
+
+        final fromByteData = ByteData.sublistView(bytes).getVariableEncInt(0);
+        expect(fromByteData.item1.toInt(), -1);
+        expect(fromByteData.item2, 1);
+      });
+
+      test("truncated variable length ints return -1 and 0 bytes consumed", () {
+        for (final sample in <List<int>>[
+          [],
+          [0xfc, 0x01],
+          [0xfd, 0x01, 0x02],
+          [0xfe, 0x01, 0x02, 0x03, 0x04],
+        ]) {
+          final bytes = Uint8List.fromList(sample);
+          final a = bytes.getVariableEncIntAt(0);
+          expect(a.item1.toInt(), -1);
+          expect(a.item2, 0);
+
+          final b = ByteData.sublistView(bytes).getVariableEncInt(0);
+          expect(b.item1.toInt(), -1);
+          expect(b.item2, 0);
+        }
+      });
+
+      test("length-encoded strings and bytes clamp to available buffer bounds",
+          () {
+        final nullBuf = Uint8List.fromList([0xfb]);
+        expect(nullBuf.getUtf8LengthEncodedString(0).item1, "");
+        expect(nullBuf.getUtf8LengthEncodedString(0).item2, 1);
+        expect(nullBuf.getLengthEncodedBytes(0).item1, isEmpty);
+        expect(nullBuf.getLengthEncodedBytes(0).item2, 1);
+
+        final truncated = Uint8List.fromList([50, 0x61, 0x62, 0x63, 0x64]);
+        final str = truncated.getUtf8LengthEncodedString(0);
+        expect(str.item1, "abcd");
+        expect(str.item2, 5);
+
+        final raw = truncated.getLengthEncodedBytes(0);
+        expect(raw.item1, [0x61, 0x62, 0x63, 0x64]);
+        expect(raw.item2, 5);
+      });
+
+      test("MySQLPacketError.decode handles short and truncated error packets",
+          () {
+        expect(
+          () => MySQLPacketError.decode(Uint8List.fromList([0xff, 0x01])),
+          throwsA(isA<MySQLProtocolException>()),
+        );
+
+        final shortError = MySQLPacketError.decode(
+          Uint8List.fromList([0xff, 0x15, 0x04, 0x62, 0x61, 0x64]),
+        );
+        expect(shortError.header, 0xff);
+        expect(shortError.errorCode, 0x0415);
+        expect(shortError.errorMessage, "bad");
+
+        final preHandshakeError = MySQLPacketError.decode(
+          Uint8List.fromList([
+            0xff,
+            0x10,
+            0x04,
+            ..."Too many connections".codeUnits,
+          ]),
+        );
+        expect(preHandshakeError.header, 0xff);
+        expect(preHandshakeError.errorCode, 1040);
+        expect(preHandshakeError.errorMessage, "Too many connections");
       });
     });
   });
