@@ -5,7 +5,7 @@ import 'package:mysql_dart/mysql_protocol.dart';
 ///
 /// Esse pacote encapsula os dados de um result set que foi enviado em formato binário,
 /// geralmente como resultado da execução de um prepared statement.
-/// 
+///
 /// Contém:
 /// - [columnCount]: Número de colunas retornadas.
 /// - [columns]: Lista de pacotes de definição de coluna ([MySQLColumnDefinitionPacket]) que descrevem cada coluna.
@@ -29,6 +29,7 @@ class MySQLPacketBinaryResultSet extends MySQLPacketPayload {
   /// Método de codificação não implementado.
   @override
   Uint8List encode() {
-    throw UnimplementedError("Encode não implementado para MySQLPacketBinaryResultSet");
+    throw UnimplementedError(
+        "Encode não implementado para MySQLPacketBinaryResultSet");
   }
 }

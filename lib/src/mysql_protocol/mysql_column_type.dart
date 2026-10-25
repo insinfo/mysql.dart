@@ -1,8 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
-import 'package:mysql_dart/mysql_protocol_extension.dart';
 import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
+
+typedef _Nullable<X> = X?;
+
+@pragma('vm:prefer-inline')
+bool _matchesType<T, U>() => T == U || T == _Nullable<U>;
 
 /// Constantes que representam os tipos de coluna do MySQL conforme o protocolo.
 const mysqlColumnTypeDecimal = 0x00;
@@ -111,99 +115,95 @@ class MySQLColumnType {
       return null;
     }
 
-    // Se T é Uint8List e o valor já é desse tipo, retorna direto.
-    if (T == Uint8List && value is Uint8List) {
+    if (T == dynamic || _matchesType<T, Object>()) {
       return value as T;
     }
 
-    // Se T é String ou dynamic, retornamos como está.
-    if (T == String || T == dynamic) {
+    if (_matchesType<T, Uint8List>()) {
+      if (value is Uint8List) {
+        return value as T;
+      }
+      throw MySQLProtocolException(
+        'Cannot convert MySQL type $_value (${value.runtimeType}) to requested type $T',
+      );
+    }
+
+    if (value is! String) {
+      throw MySQLProtocolException(
+        'Cannot convert MySQL type $_value (${value.runtimeType}) to requested type $T',
+      );
+    }
+
+    return _convertStringToType<T>(value, columnLength);
+  }
+
+  T? _convertStringToType<T>(String value, int? columnLength) {
+    if (_matchesType<T, String>()) {
       return value as T;
     }
-
-    // Se T é bool e o tipo é TINY(1), convertendo '0' ou '1'.
-    if (T == bool) {
-      if (_value == mysqlColumnTypeTiny && columnLength == 1) {
-        return int.parse(value) > 0 as T;
-      } else {
-        throw MySQLProtocolException(
-          "Cannot convert MySQL type $_value to requested type bool",
-        );
-      }
+    if (_matchesType<T, bool>() &&
+        _value == mysqlColumnTypeTiny &&
+        columnLength == 1) {
+      return (int.parse(value) > 0) as T;
     }
-
-    // Conversão para int
-    if (T == int) {
-      switch (_value) {
-        case mysqlColumnTypeTiny:
-        case mysqlColumnTypeShort:
-        case mysqlColumnTypeLong:
-        case mysqlColumnTypeLongLong:
-        case mysqlColumnTypeInt24:
-        case mysqlColumnTypeYear:
-          return int.parse(value) as T;
-        default:
-          throw MySQLProtocolException(
-            "Cannot convert MySQL type $_value to requested type int",
-          );
-      }
+    if (_matchesType<T, int>() && _canConvertToInt()) {
+      return int.parse(value) as T;
     }
-
-    // Conversão para double
-    if (T == double) {
-      switch (_value) {
-        case mysqlColumnTypeTiny:
-        case mysqlColumnTypeShort:
-        case mysqlColumnTypeLong:
-        case mysqlColumnTypeLongLong:
-        case mysqlColumnTypeInt24:
-        case mysqlColumnTypeFloat:
-        case mysqlColumnTypeDouble:
-          return double.parse(value) as T;
-        default:
-          throw MySQLProtocolException(
-            "Cannot convert MySQL type $_value to requested type double",
-          );
-      }
+    if (_matchesType<T, double>() && _canConvertToNum()) {
+      return double.parse(value) as T;
     }
-
-    // Conversão para num
-    if (T == num) {
-      switch (_value) {
-        case mysqlColumnTypeTiny:
-        case mysqlColumnTypeShort:
-        case mysqlColumnTypeLong:
-        case mysqlColumnTypeLongLong:
-        case mysqlColumnTypeInt24:
-        case mysqlColumnTypeFloat:
-        case mysqlColumnTypeDouble:
-          return num.parse(value) as T;
-        default:
-          throw MySQLProtocolException(
-            "Cannot convert MySQL type $_value to requested type num",
-          );
-      }
+    if (_matchesType<T, num>() && _canConvertToNum()) {
+      return num.parse(value) as T;
     }
-
-    // Conversão para DateTime
-    if (T == DateTime) {
-      switch (_value) {
-        case mysqlColumnTypeDate:
-        case mysqlColumnTypeDateTime2:
-        case mysqlColumnTypeDateTime:
-        case mysqlColumnTypeTimestamp:
-        case mysqlColumnTypeTimestamp2:
-          return tryParseMySqlDateTime(value) as T?;
-        default:
-          throw MySQLProtocolException(
-            "Cannot convert MySQL type $_value to requested type DateTime",
-          );
-      }
+    if (_matchesType<T, DateTime>() && _canConvertToDateTime()) {
+      return tryParseMySqlDateTime(value) as T?;
     }
 
     throw MySQLProtocolException(
-      "Cannot convert MySQL type $_value to requested type ${T.runtimeType}",
+      'Cannot convert MySQL type $_value to requested type $T',
     );
+  }
+
+  bool _canConvertToInt() {
+    switch (_value) {
+      case mysqlColumnTypeTiny:
+      case mysqlColumnTypeShort:
+      case mysqlColumnTypeLong:
+      case mysqlColumnTypeLongLong:
+      case mysqlColumnTypeInt24:
+      case mysqlColumnTypeYear:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  bool _canConvertToNum() {
+    switch (_value) {
+      case mysqlColumnTypeTiny:
+      case mysqlColumnTypeShort:
+      case mysqlColumnTypeLong:
+      case mysqlColumnTypeLongLong:
+      case mysqlColumnTypeInt24:
+      case mysqlColumnTypeFloat:
+      case mysqlColumnTypeDouble:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  bool _canConvertToDateTime() {
+    switch (_value) {
+      case mysqlColumnTypeDate:
+      case mysqlColumnTypeDateTime2:
+      case mysqlColumnTypeDateTime:
+      case mysqlColumnTypeTimestamp:
+      case mysqlColumnTypeTimestamp2:
+        return true;
+      default:
+        return false;
+    }
   }
 
   /// Retorna o melhor tipo Dart para representar os dados da coluna, levando
@@ -293,161 +293,59 @@ class MySQLColumnType {
   int startOffset, {
   bool unsigned = false,
 }) {
+  final limit =
+      data.lengthInBytes < buffer.length ? data.lengthInBytes : buffer.length;
+  if (startOffset < 0) {
+    throw const MySQLProtocolException(
+      'Invalid negative startOffset while parsing binary column data',
+    );
+  }
+
   // [unsigned] comes from the column's UNSIGNED flag: without it a
   // TINYINT UNSIGNED 200 was read as -56 (and so on for every width).
   switch (columnType) {
     case mysqlColumnTypeTiny:
-      {
-        final value =
-            unsigned ? data.getUint8(startOffset) : data.getInt8(startOffset);
-        return (value.toString(), 1);
-      }
+      _requireBinaryBytes(startOffset, 1, limit);
+      final value =
+          unsigned ? data.getUint8(startOffset) : data.getInt8(startOffset);
+      return (value.toString(), 1);
 
     case mysqlColumnTypeShort:
-      {
-        final value = unsigned
-            ? data.getUint16(startOffset, Endian.little)
-            : data.getInt16(startOffset, Endian.little);
-        return (value.toString(), 2);
-      }
+      _requireBinaryBytes(startOffset, 2, limit);
+      final value = unsigned
+          ? data.getUint16(startOffset, Endian.little)
+          : data.getInt16(startOffset, Endian.little);
+      return (value.toString(), 2);
 
     case mysqlColumnTypeLong:
     case mysqlColumnTypeInt24:
-      {
-        final value = unsigned
-            ? data.getUint32(startOffset, Endian.little)
-            : data.getInt32(startOffset, Endian.little);
-        return (value.toString(), 4);
-      }
+      _requireBinaryBytes(startOffset, 4, limit);
+      final value = unsigned
+          ? data.getUint32(startOffset, Endian.little)
+          : data.getInt32(startOffset, Endian.little);
+      return (value.toString(), 4);
 
     case mysqlColumnTypeLongLong:
-      {
-        final value = data.getInt64(startOffset, Endian.little);
-        if (unsigned && value < 0) {
-          // Above 2^63 - 1: the two's-complement int64 plus 2^64.
-          return ((BigInt.from(value) + (BigInt.one << 64)).toString(), 8);
-        }
-        return (value.toString(), 8);
-      }
+      return _parseBinaryLongLong(data, startOffset, limit, unsigned);
 
     case mysqlColumnTypeFloat:
-      {
-        final value = data.getFloat32(startOffset, Endian.little);
-        return (value.toString(), 4);
-      }
+      _requireBinaryBytes(startOffset, 4, limit);
+      final value = data.getFloat32(startOffset, Endian.little);
+      return (value.toString(), 4);
 
     case mysqlColumnTypeDouble:
-      {
-        final value = data.getFloat64(startOffset, Endian.little);
-        return (value.toString(), 8);
-      }
+      _requireBinaryBytes(startOffset, 8, limit);
+      final value = data.getFloat64(startOffset, Endian.little);
+      return (value.toString(), 8);
 
     case mysqlColumnTypeDate:
     case mysqlColumnTypeDateTime:
     case mysqlColumnTypeTimestamp:
-      {
-        final initialOffset = startOffset;
-        // Lê o número de bytes (pode ser 0, 4, 7 ou 11)
-        final numOfBytes = data.getUint8(startOffset);
-        startOffset += 1;
-
-        // Quando numOfBytes == 0, MySQL envia datas/timestamps '0000-00-00 00:00:00'
-        if (numOfBytes == 0) {
-          return ("0000-00-00 00:00:00", 1);
-        }
-
-        var year = 0, month = 0, day = 0;
-        var hour = 0, minute = 0, second = 0, microSecond = 0;
-
-        if (numOfBytes >= 4) {
-          year = data.getUint16(startOffset, Endian.little);
-          startOffset += 2;
-          month = data.getUint8(startOffset);
-          startOffset += 1;
-          day = data.getUint8(startOffset);
-          startOffset += 1;
-        }
-        if (numOfBytes >= 7) {
-          hour = data.getUint8(startOffset);
-          startOffset += 1;
-          minute = data.getUint8(startOffset);
-          startOffset += 1;
-          second = data.getUint8(startOffset);
-          startOffset += 1;
-        }
-        if (numOfBytes >= 11) {
-          microSecond = data.getUint32(startOffset, Endian.little);
-          startOffset += 4;
-        }
-
-        // Zero-padded like the text protocol: an unpadded year (999) failed
-        // DateTime.parse, and unpadded microseconds (5000 -> ".5000") read
-        // as half a second.
-        final result = StringBuffer()
-          ..write('${year.toString().padLeft(4, '0')}-')
-          ..write('${month.toString().padLeft(2, '0')}-')
-          ..write('${day.toString().padLeft(2, '0')} ')
-          ..write('${hour.toString().padLeft(2, '0')}:')
-          ..write('${minute.toString().padLeft(2, '0')}:')
-          ..write(second.toString().padLeft(2, '0'));
-
-        if (numOfBytes >= 11) {
-          result.write('.${microSecond.toString().padLeft(6, '0')}');
-        }
-
-        final consumed = startOffset - initialOffset;
-        return (result.toString(), consumed);
-      }
+      return _parseBinaryDateTime(data, startOffset, limit);
 
     case mysqlColumnTypeTime:
     case mysqlColumnTypeTime2:
-      {
-        final initialOffset = startOffset;
-        // Lê o número de bytes (pode ser 0, 8 ou 12)
-        final numOfBytes = data.getUint8(startOffset);
-        startOffset += 1;
-
-        if (numOfBytes == 0) {
-          return ("00:00:00", 1);
-        }
-
-        var isNegative = false;
-        var days = 0, hours = 0, minutes = 0, seconds = 0, microSecond = 0;
-
-        if (numOfBytes >= 8) {
-          isNegative = data.getUint8(startOffset) > 0;
-          startOffset += 1;
-          days = data.getUint32(startOffset, Endian.little);
-          startOffset += 4;
-          hours = data.getUint8(startOffset);
-          startOffset += 1;
-          minutes = data.getUint8(startOffset);
-          startOffset += 1;
-          seconds = data.getUint8(startOffset);
-          startOffset += 1;
-        }
-
-        if (numOfBytes >= 12) {
-          microSecond = data.getUint32(startOffset, Endian.little);
-          startOffset += 4;
-        }
-
-        hours += days * 24;
-        final timeResult = StringBuffer();
-        if (isNegative) {
-          timeResult.write("-");
-        }
-        timeResult.write('${hours.toString().padLeft(2, '0')}:');
-        timeResult.write('${minutes.toString().padLeft(2, '0')}:');
-        timeResult.write(seconds.toString().padLeft(2, '0'));
-
-        if (numOfBytes >= 12) {
-          timeResult.write('.${microSecond.toString().padLeft(6, '0')}');
-        }
-
-        final consumed = startOffset - initialOffset;
-        return (timeResult.toString(), consumed);
-      }
+      return _parseBinaryTime(data, startOffset, limit);
 
     case mysqlColumnTypeString:
     case mysqlColumnTypeVarString:
@@ -455,20 +353,16 @@ class MySQLColumnType {
     case mysqlColumnTypeEnum:
     case mysqlColumnTypeSet:
     case mysqlColumnTypeJson:
-      {
-        // Dados textuais length-encoded
-        final result = buffer.getUtf8LengthEncodedString(startOffset);
-        return (result.$1, result.$2);
-      }
-
     case mysqlColumnTypeDecimal:
     case mysqlColumnTypeNewDecimal:
-      {
-        final lengthEncoded = buffer.getLengthEncodedBytes(startOffset);
-        // Valores numéricos vêm como texto no protocolo textual; decodifique em UTF-8.
-        final strValue = utf8.decode(lengthEncoded.$1, allowMalformed: true);
-        return (strValue, lengthEncoded.$2);
-      }
+      final slice = readLengthEncodedSlice(
+        buffer,
+        startOffset,
+        limit,
+        allowNullMarker: false,
+      );
+      final strValue = utf8.decode(slice.bytes!, allowMalformed: true);
+      return (strValue, slice.nextOffset - startOffset);
 
     case mysqlColumnTypeLongBlob:
     case mysqlColumnTypeMediumBlob:
@@ -476,21 +370,136 @@ class MySQLColumnType {
     case mysqlColumnTypeTinyBlob:
     case mysqlColumnTypeGeometry:
     case mysqlColumnTypeBit:
-      {
-        // Para dados binários, retorna os bytes crus
-        final lengthEncoded = buffer.getLengthEncodedBytes(startOffset);
-        return (lengthEncoded.$1, lengthEncoded.$2);
-      }
+      final slice = readLengthEncodedSlice(
+        buffer,
+        startOffset,
+        limit,
+        allowNullMarker: false,
+      );
+      return (slice.bytes!, slice.nextOffset - startOffset);
 
     case mysqlColumnTypeYear:
-      {
-        // Lê 2 bytes para YEAR
-        final yearValue = data.getUint16(startOffset, Endian.little);
-        return (yearValue.toString(), 2);
-      }
+      _requireBinaryBytes(startOffset, 2, limit);
+      final yearValue = data.getUint16(startOffset, Endian.little);
+      return (yearValue.toString(), 2);
   }
 
   throw MySQLProtocolException(
     "Can not parse binary column data: column type $columnType is not implemented",
   );
+}
+
+void _requireBinaryBytes(int startOffset, int count, int limit) {
+  if (startOffset < 0 || startOffset > limit - count) {
+    throw const MySQLProtocolException(
+      'Truncated buffer while parsing binary column data',
+    );
+  }
+}
+
+(String, int) _parseBinaryLongLong(
+  ByteData data,
+  int startOffset,
+  int limit,
+  bool unsigned,
+) {
+  _requireBinaryBytes(startOffset, 8, limit);
+  final value = data.getInt64(startOffset, Endian.little);
+  if (unsigned && value < 0) {
+    // Above 2^63 - 1: the two's-complement int64 plus 2^64.
+    return ((BigInt.from(value) + (BigInt.one << 64)).toString(), 8);
+  }
+  return (value.toString(), 8);
+}
+
+(String, int) _parseBinaryDateTime(
+  ByteData data,
+  int startOffset,
+  int limit,
+) {
+  _requireBinaryBytes(startOffset, 1, limit);
+  final numOfBytes = data.getUint8(startOffset);
+  if (numOfBytes == 0) {
+    return ('0000-00-00 00:00:00', 1);
+  }
+  if (numOfBytes != 4 && numOfBytes != 7 && numOfBytes != 11) {
+    throw MySQLProtocolException(
+      'Invalid binary date/datetime length: $numOfBytes',
+    );
+  }
+  _requireBinaryBytes(startOffset, 1 + numOfBytes, limit);
+
+  var offset = startOffset + 1;
+  final year = data.getUint16(offset, Endian.little);
+  final month = data.getUint8(offset + 2);
+  final day = data.getUint8(offset + 3);
+  offset += 4;
+
+  var hour = 0, minute = 0, second = 0, microSecond = 0;
+  if (numOfBytes >= 7) {
+    hour = data.getUint8(offset);
+    minute = data.getUint8(offset + 1);
+    second = data.getUint8(offset + 2);
+    offset += 3;
+  }
+  if (numOfBytes == 11) {
+    microSecond = data.getUint32(offset, Endian.little);
+  }
+
+  // Zero-padded like the text protocol: an unpadded year (999) failed
+  // DateTime.parse, and unpadded microseconds (5000 -> ".5000") read
+  // as half a second.
+  final result = StringBuffer()
+    ..write('${year.toString().padLeft(4, '0')}-')
+    ..write('${month.toString().padLeft(2, '0')}-')
+    ..write('${day.toString().padLeft(2, '0')} ')
+    ..write('${hour.toString().padLeft(2, '0')}:')
+    ..write('${minute.toString().padLeft(2, '0')}:')
+    ..write(second.toString().padLeft(2, '0'));
+
+  if (numOfBytes == 11) {
+    result.write('.${microSecond.toString().padLeft(6, '0')}');
+  }
+
+  return (result.toString(), 1 + numOfBytes);
+}
+
+(String, int) _parseBinaryTime(
+  ByteData data,
+  int startOffset,
+  int limit,
+) {
+  _requireBinaryBytes(startOffset, 1, limit);
+  final numOfBytes = data.getUint8(startOffset);
+  if (numOfBytes == 0) {
+    return ('00:00:00', 1);
+  }
+  if (numOfBytes != 8 && numOfBytes != 12) {
+    throw MySQLProtocolException(
+      'Invalid binary time length: $numOfBytes',
+    );
+  }
+  _requireBinaryBytes(startOffset, 1 + numOfBytes, limit);
+
+  final offset = startOffset + 1;
+  final isNegative = data.getUint8(offset) > 0;
+  final days = data.getUint32(offset + 1, Endian.little);
+  final hours = data.getUint8(offset + 5) + days * 24;
+  final minutes = data.getUint8(offset + 6);
+  final seconds = data.getUint8(offset + 7);
+
+  final timeResult = StringBuffer();
+  if (isNegative) {
+    timeResult.write('-');
+  }
+  timeResult.write('${hours.toString().padLeft(2, '0')}:');
+  timeResult.write('${minutes.toString().padLeft(2, '0')}:');
+  timeResult.write(seconds.toString().padLeft(2, '0'));
+
+  if (numOfBytes == 12) {
+    final microSecond = data.getUint32(offset + 8, Endian.little);
+    timeResult.write('.${microSecond.toString().padLeft(6, '0')}');
+  }
+
+  return (timeResult.toString(), 1 + numOfBytes);
 }

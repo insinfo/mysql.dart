@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import '../column_utils.dart';
 
@@ -27,64 +26,33 @@ class MySQLResultSetRowPacket extends MySQLPacketPayload {
   factory MySQLResultSetRowPacket.decode(
       Uint8List buffer, List<MySQLColumnDefinitionPacket> columns,
       {List<bool>? binaryColumns}) {
-    int offset = 0;
+    var offset = 0;
+    final limit = buffer.length;
     final values = List<dynamic>.filled(columns.length, null, growable: false);
 
-    for (int x = 0; x < columns.length; x++) {
-      final colDef = columns[x];
-      final nextByte = buffer[offset];
+    for (var x = 0; x < columns.length; x++) {
+      final slice = readLengthEncodedSlice(
+        buffer,
+        offset,
+        limit,
+        allowNullMarker: true,
+      );
+      offset = slice.nextOffset;
+      final fieldBytes = slice.bytes;
+      if (fieldBytes == null) {
+        continue;
+      }
 
-      // 0xFB = NULL
-      if (nextByte == 0xfb) {
-        offset++;
+      final isBinary = (binaryColumns != null && x < binaryColumns.length)
+          ? binaryColumns[x]
+          : columnShouldBeBinary(columns[x]);
+      if (isBinary) {
+        // Se for BLOB/binário, guardamos como bytes; caso contrário, convertemos p/ String
+        values[x] = fieldBytes; // Uint8List
       } else {
-        late final int valueLength;
-        late final int headerLength;
-
-        if (nextByte < 0xfb) {
-          valueLength = nextByte;
-          headerLength = 1;
-        } else if (nextByte == 0xfc) {
-          valueLength = buffer[offset + 1] | (buffer[offset + 2] << 8);
-          headerLength = 3;
-        } else if (nextByte == 0xfd) {
-          valueLength = buffer[offset + 1] |
-              (buffer[offset + 2] << 8) |
-              (buffer[offset + 3] << 16);
-          headerLength = 4;
-        } else if (nextByte == 0xfe) {
-          final low = buffer[offset + 1] |
-              (buffer[offset + 2] << 8) |
-              (buffer[offset + 3] << 16) |
-              (buffer[offset + 4] << 24);
-          final high = buffer[offset + 5] |
-              (buffer[offset + 6] << 8) |
-              (buffer[offset + 7] << 16) |
-              (buffer[offset + 8] << 24);
-          valueLength =
-              ((BigInt.from(high) << 32) | BigInt.from(low & 0xffffffff))
-                  .toInt();
-          headerLength = 9;
-        } else {
-          throw MySQLProtocolException(
-            "Wrong first byte, while decoding textual result set row",
-          );
-        }
-
-        final valueStart = offset + headerLength;
-        final valueEnd = valueStart + valueLength;
-        final fieldBytes = Uint8List.sublistView(buffer, valueStart, valueEnd);
-        offset = valueEnd;
-
-        if (binaryColumns?[x] ?? columnShouldBeBinary(colDef)) {
-          // Se for BLOB/binário, guardamos como bytes; caso contrário, convertemos p/ String
-          values[x] = fieldBytes; // Uint8List
-        } else {
-          // MySQL always sends textual protocol data using the negotiated connection charset (utf8mb4 by default),
-          // so decode as UTF-8 to keep accents and emojis intact.
-          final strValue = utf8.decode(fieldBytes, allowMalformed: true);
-          values[x] = strValue;
-        }
+        // MySQL always sends textual protocol data using the negotiated connection charset (utf8mb4 by default),
+        // so decode as UTF-8 to keep accents and emojis intact.
+        values[x] = utf8.decode(fieldBytes, allowMalformed: true);
       }
     }
 
