@@ -18,29 +18,29 @@ import 'package:mysql_dart/mysql_protocol_extension.dart';
 class MySQLPacketInitialHandshake extends MySQLPacketPayload {
   /// Versão do protocolo (geralmente 10).
   final int protocolVersion;
-  
+
   /// Versão do servidor (ex.: "5.7.26-log").
   final String serverVersion;
-  
+
   /// ID da conexão.
   final int connectionID;
-  
+
   /// Primeira parte dos dados de autenticação enviados pelo servidor (8 bytes).
   final Uint8List authPluginDataPart1;
-  
+
   /// Flags de capabilities do servidor.
   final int capabilityFlags;
-  
+
   /// Conjunto de caracteres (charset) utilizado na conexão.
   final int charset;
-  
+
   /// Flags de status (2 bytes) enviados pelo servidor.
   final Uint8List statusFlags;
-  
+
   /// Segunda parte dos dados de autenticação (opcional). Geralmente utilizada quando
   /// a flag mysqlCapFlagClientSecureConnection está ativa.
   final Uint8List? authPluginDataPart2;
-  
+
   /// Nome do plugin de autenticação, se especificado (opcional).
   final String? authPluginName;
 
@@ -83,7 +83,7 @@ class MySQLPacketInitialHandshake extends MySQLPacketPayload {
 
     // 2) Server Version: String terminada em null
     final serverVersion = buffer.getUtf8NullTerminatedString(offset);
-    offset += serverVersion.item2;
+    offset += serverVersion.$2;
 
     // 3) Connection ID (4 bytes, little-endian)
     final connectionID = byteData.getUint32(offset, Endian.little);
@@ -140,12 +140,12 @@ class MySQLPacketInitialHandshake extends MySQLPacketPayload {
     // 12) Auth Plugin Name (se aplicável)
     String? authPluginName;
     if (capabilityFlags & mysqlCapFlagClientPluginAuth != 0) {
-      authPluginName = buffer.getUtf8NullTerminatedString(offset).item1;
+      authPluginName = buffer.getUtf8NullTerminatedString(offset).$1;
     }
 
     return MySQLPacketInitialHandshake(
       protocolVersion: protocolVersion,
-      serverVersion: serverVersion.item1,
+      serverVersion: serverVersion.$1,
       connectionID: connectionID,
       authPluginDataPart1: authPluginDataPart1,
       authPluginDataPart2: authPluginDataPart2,
@@ -158,7 +158,8 @@ class MySQLPacketInitialHandshake extends MySQLPacketPayload {
 
   @override
   Uint8List encode() {
-    throw UnimplementedError("Encode não implementado para MySQLPacketInitialHandshake");
+    throw UnimplementedError(
+        "Encode não implementado para MySQLPacketInitialHandshake");
   }
 
   @override

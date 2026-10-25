@@ -6,18 +6,9 @@ import 'package:mysql_dart/mysql_protocol_extension.dart';
 import 'package:mysql_dart/src/mysql_client/caching_sha2_auth.dart';
 import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 import 'package:mysql_dart/src/utils/hash.dart';
-import 'package:mysql_dart/src/utils/tuple2.dart';
 import 'package:test/test.dart';
 
 void main() {
-  group('Tuple2', () {
-    test('stores both items', () {
-      const tuple = Tuple2<String, int>('value', 42);
-      expect(tuple.item1, 'value');
-      expect(tuple.item2, 42);
-    });
-  });
-
   group('Hash utils', () {
     test('sha1 matches known vector', () {
       expect(
@@ -99,8 +90,8 @@ void main() {
       final buffer = Uint8List.fromList([0x03, 0x61, 0x62, 0x63, 0xff]);
       final value = buffer.getLengthEncodedBytes(0);
 
-      expect(value.item1, [0x61, 0x62, 0x63]);
-      expect(value.item2, 4);
+      expect(value.$1, [0x61, 0x62, 0x63]);
+      expect(value.$2, 4);
     });
 
     test('reads int2 and int3 in little endian', () {

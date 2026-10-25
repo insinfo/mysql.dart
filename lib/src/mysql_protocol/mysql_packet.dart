@@ -2,7 +2,6 @@ import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/src/utils/hash.dart';
-import 'package:mysql_dart/src/utils/tuple2.dart';
 
 //
 // Constantes de flags de capabilities do protocolo MySQL
@@ -127,8 +126,8 @@ class MySQLPacket {
   }
 
   /// Decodifica o cabeçalho do pacote, retornando (payloadLength, sequenceID).
-  static Tuple2<int, int> decodePacketHeader(Uint8List buffer) {
-    return Tuple2(getPayloadLength(buffer), getSequenceId(buffer));
+  static (int, int) decodePacketHeader(Uint8List buffer) {
+    return (getPayloadLength(buffer), getSequenceId(buffer));
   }
 
   /// Detecta o tipo genérico do pacote com base no primeiro byte do payload.
@@ -160,8 +159,8 @@ class MySQLPacket {
       Uint8List.sublistView(buffer, offset),
     );
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }
@@ -182,8 +181,8 @@ class MySQLPacket {
       Uint8List.sublistView(buffer, offset),
     );
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }
@@ -193,7 +192,7 @@ class MySQLPacket {
     final header = decodePacketHeader(buffer);
     final offset = 4;
     final byteData = ByteData.sublistView(buffer);
-    final payloadLength = header.item1;
+    final payloadLength = header.$1;
     final type = byteData.getUint8(offset);
 
     late MySQLPacketPayload payload;
@@ -219,7 +218,7 @@ class MySQLPacket {
     }
 
     return MySQLPacket(
-      sequenceID: header.item2,
+      sequenceID: header.$2,
       payloadLength: payloadLength,
       payload: payload,
     );
@@ -252,8 +251,8 @@ class MySQLPacket {
     }
 
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }
@@ -266,8 +265,8 @@ class MySQLPacket {
       Uint8List.sublistView(buffer, offset),
     );
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }
@@ -284,8 +283,8 @@ class MySQLPacket {
       binaryColumns: binaryColumns,
     );
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }
@@ -302,8 +301,8 @@ class MySQLPacket {
       textualColumns: textualColumns,
     );
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }
@@ -331,8 +330,8 @@ class MySQLPacket {
     }
 
     return MySQLPacket(
-      sequenceID: header.item2,
-      payloadLength: header.item1,
+      sequenceID: header.$2,
+      payloadLength: header.$1,
       payload: payload,
     );
   }

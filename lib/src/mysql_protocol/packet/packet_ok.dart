@@ -48,11 +48,11 @@ class MySQLPacketOK extends MySQLPacketPayload {
 
     // 2) Leitura do número de linhas afetadas (length-encoded integer)
     final affectedRows = buffer.getVariableEncIntAt(offset);
-    offset += affectedRows.item2;
+    offset += affectedRows.$2;
 
     // 3) Leitura do último ID inserido (length-encoded integer)
     final lastInsertID = buffer.getVariableEncIntAt(offset);
-    offset += lastInsertID.item2;
+    offset += lastInsertID.$2;
 
     // 4) Status flags (2 bytes, little-endian; CLIENT_PROTOCOL_41)
     final statusFlags = buffer.length >= offset + 2
@@ -61,8 +61,8 @@ class MySQLPacketOK extends MySQLPacketPayload {
 
     return MySQLPacketOK(
       header: header,
-      affectedRows: affectedRows.item1,
-      lastInsertID: lastInsertID.item1,
+      affectedRows: affectedRows.$1,
+      lastInsertID: lastInsertID.$1,
       statusFlags: statusFlags,
     );
   }

@@ -103,8 +103,8 @@ class MySQLBinaryResultSetRowPacket extends MySQLPacketPayload {
           unsigned: (colDef.flags & _unsignedFlag) != 0,
         );
         // Avança o offset de acordo com o número de bytes lidos.
-        offset += parseResult.item2;
-        var value = parseResult.item1;
+        offset += parseResult.$2;
+        var value = parseResult.$1;
         if (value is Uint8List &&
             (textualColumns?[x] ?? columnShouldBeTextual(colDefs[x]))) {
           // Prepared statements also deliver textual blobs using the negotiated charset; decode accordingly.

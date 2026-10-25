@@ -28,7 +28,7 @@ class MySQLPacketColumnCount extends MySQLPacketPayload {
     final columnCount = buffer.getVariableEncIntAt(0);
 
     return MySQLPacketColumnCount(
-      columnCount: columnCount.item1,
+      columnCount: columnCount.$1,
     );
   }
 

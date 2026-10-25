@@ -3,7 +3,7 @@ import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
 
 /// Representa o pacote "Auth Switch Request" do protocolo MySQL.
-/// 
+///
 /// Esse pacote é enviado pelo servidor para solicitar que o cliente
 /// utilize um método de autenticação diferente. O pacote contém:
 /// - Um header (1 byte) indicando o tipo de pacote;
@@ -43,7 +43,7 @@ class MySQLPacketAuthSwitchRequest extends MySQLPacketPayload {
 
     // 2) Leitura do nome do plugin de autenticação (string null-terminated)
     final authPluginName = buffer.getUtf8NullTerminatedString(offset);
-    offset += authPluginName.item2;
+    offset += authPluginName.$2;
 
     // 3) O restante do buffer corresponde aos dados do plugin
     final authPluginData = Uint8List.sublistView(buffer, offset);
@@ -51,7 +51,7 @@ class MySQLPacketAuthSwitchRequest extends MySQLPacketPayload {
     return MySQLPacketAuthSwitchRequest(
       header: header,
       authPluginData: authPluginData,
-      authPluginName: authPluginName.item1,
+      authPluginName: authPluginName.$1,
     );
   }
 
