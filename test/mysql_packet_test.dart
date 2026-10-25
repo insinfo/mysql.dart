@@ -636,5 +636,36 @@ void main() {
       expect(payload.header, 0x00);
       expect(payload.affectedRows.toInt(), 0);
     });
+
+    test("MySQLPacketHandshakeResponse41 handles empty passwords", () {
+      final initial = MySQLPacketInitialHandshake(
+        protocolVersion: 10,
+        serverVersion: "8.0.0",
+        connectionID: 1,
+        authPluginDataPart1: Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]),
+        capabilityFlags: 0,
+        charset: 33,
+        statusFlags: Uint8List.fromList([0, 0]),
+        authPluginDataPart2: Uint8List.fromList(
+            [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 0]),
+        authPluginName: "caching_sha2_password",
+      );
+
+      final nativeResp =
+          MySQLPacketHandshakeResponse41.createWithNativePassword(
+        username: "root",
+        password: "",
+        initialHandshakePayload: initial,
+      );
+      expect(nativeResp.authResponse, isEmpty);
+
+      final sha2Resp =
+          MySQLPacketHandshakeResponse41.createWithCachingSha2Password(
+        username: "root",
+        password: "",
+        initialHandshakePayload: initial,
+      );
+      expect(sha2Resp.authResponse, isEmpty);
+    });
   });
 }
