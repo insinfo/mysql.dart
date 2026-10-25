@@ -29,6 +29,9 @@ Uint8List buildCachingSha2EncryptedPassword(
 }
 
 Uint8List _preparePassword(String password, Uint8List seed) {
+  if (seed.isEmpty) {
+    throw const FormatException('RSA auth seed must not be empty');
+  }
   final passwordBytes = utf8.encode(password);
   final plain = Uint8List(passwordBytes.length + 1);
   plain.setRange(0, passwordBytes.length, passwordBytes);
@@ -41,9 +44,9 @@ Uint8List _preparePassword(String password, Uint8List seed) {
 }
 
 Uint8List _oaepEncode(Uint8List message, int modulusLength) {
-  final hLen = 20; // SHA-1
+  const hLen = 20; // SHA-1
   if (message.length > modulusLength - 2 * hLen - 2) {
-    throw ArgumentError('Message too long for RSA OAEP envelope');
+    throw const FormatException('Message too long for RSA OAEP envelope');
   }
 
   final labelHash = sha1Digest(const <int>[]);
@@ -101,6 +104,8 @@ Uint8List _randomBytes(int length) {
   return bytes;
 }
 
+const int _maxRsaModulusBits = 16384;
+
 _RsaPublicKey _parseRsaPublicKeyFromPem(String pem) {
   final normalized = pem
       .replaceAll('-----BEGIN PUBLIC KEY-----', '')
@@ -109,49 +114,78 @@ _RsaPublicKey _parseRsaPublicKeyFromPem(String pem) {
       .replaceAll('-----END RSA PUBLIC KEY-----', '')
       .replaceAll(RegExp(r'\s+'), '');
 
+  if (normalized.isEmpty) {
+    throw const FormatException('Empty RSA public key PEM payload');
+  }
+
   final derBytes = base64.decode(normalized);
   final topLevel = _readDerObject(derBytes, 0);
-  if (topLevel.tag != 0x30) {
-    throw ArgumentError('Unsupported RSA public key format');
+  if (topLevel.tag != 0x30 || topLevel.endOffset != derBytes.length) {
+    throw const FormatException('Unsupported RSA public key format');
   }
 
   final children = _readDerChildren(topLevel.value);
-  if (children.length >= 2 &&
+  if (children.length == 2 &&
       children[0].tag == 0x02 &&
       children[1].tag == 0x02) {
     return _readPkcs1PublicKey(children);
   }
 
-  final bitString = children.firstWhere(
-    (child) => child.tag == 0x03,
-    orElse: () => throw ArgumentError('Unsupported SubjectPublicKeyInfo'),
-  );
-
-  if (bitString.value.isEmpty || bitString.value[0] != 0x00) {
-    throw ArgumentError('Unsupported RSA bit string encoding');
-  }
-
-  final publicKeySequence = _readDerObject(
-    Uint8List.sublistView(bitString.value, 1),
-    0,
-  );
-  if (publicKeySequence.tag != 0x30) {
-    throw ArgumentError('Unsupported RSA public key payload');
+  final bitString = _extractSubjectPublicKeyBitString(children);
+  final keyBytes = Uint8List.sublistView(bitString, 1);
+  final publicKeySequence = _readDerObject(keyBytes, 0);
+  if (publicKeySequence.tag != 0x30 ||
+      publicKeySequence.endOffset != keyBytes.length) {
+    throw const FormatException('Unsupported RSA public key payload');
   }
 
   return _readPkcs1PublicKey(_readDerChildren(publicKeySequence.value));
 }
 
+Uint8List _extractSubjectPublicKeyBitString(List<_DerObject> children) {
+  if (children.length != 2 ||
+      children[0].tag != 0x30 ||
+      children[1].tag != 0x03) {
+    throw const FormatException('Unsupported SubjectPublicKeyInfo');
+  }
+  final algorithmChildren = _readDerChildren(children[0].value);
+  if (algorithmChildren.isEmpty ||
+      algorithmChildren[0].tag != 0x06 ||
+      algorithmChildren[0].value.isEmpty) {
+    throw const FormatException('Invalid SubjectPublicKeyInfo algorithm');
+  }
+  final bitString = children[1].value;
+  if (bitString.isEmpty || bitString[0] != 0x00) {
+    throw const FormatException('Unsupported RSA bit string encoding');
+  }
+  return bitString;
+}
+
 _RsaPublicKey _readPkcs1PublicKey(List<_DerObject> children) {
-  if (children.length < 2 ||
+  if (children.length != 2 ||
       children[0].tag != 0x02 ||
       children[1].tag != 0x02) {
-    throw ArgumentError('Unsupported PKCS#1 RSA public key');
+    throw const FormatException('Unsupported PKCS#1 RSA public key');
   }
 
-  final modulus = _unsignedBigIntFromDerInteger(children[0].value);
-  final exponent = _unsignedBigIntFromDerInteger(children[1].value);
+  final modulus = _positiveBigIntFromDerInteger(children[0].value);
+  final exponent = _positiveBigIntFromDerInteger(children[1].value);
+  _validateRsaPublicKeyParameters(modulus, exponent);
   return _RsaPublicKey(modulus, exponent);
+}
+
+void _validateRsaPublicKeyParameters(BigInt modulus, BigInt exponent) {
+  if (modulus <= BigInt.zero ||
+      modulus.isEven ||
+      modulus.bitLength > _maxRsaModulusBits) {
+    throw const FormatException('Invalid RSA modulus');
+  }
+  if (exponent < BigInt.from(3) ||
+      exponent.isEven ||
+      exponent >= modulus ||
+      exponent.bitLength > _maxRsaModulusBits) {
+    throw const FormatException('Invalid RSA public exponent');
+  }
 }
 
 List<_DerObject> _readDerChildren(Uint8List bytes) {
@@ -166,17 +200,17 @@ List<_DerObject> _readDerChildren(Uint8List bytes) {
 }
 
 _DerObject _readDerObject(Uint8List bytes, int offset) {
-  if (offset >= bytes.length) {
-    throw ArgumentError('Unexpected end of DER stream');
+  if (offset < 0 || offset >= bytes.length) {
+    throw const FormatException('Unexpected end of DER stream');
   }
 
   final tag = bytes[offset];
   final lengthInfo = _readDerLength(bytes, offset + 1);
   final valueStart = lengthInfo.valueStart;
-  final valueEnd = valueStart + lengthInfo.length;
-  if (valueEnd > bytes.length) {
-    throw ArgumentError('Invalid DER object length');
+  if (lengthInfo.length < 0 || lengthInfo.length > bytes.length - valueStart) {
+    throw const FormatException('Invalid DER object length');
   }
+  final valueEnd = valueStart + lengthInfo.length;
 
   return _DerObject(
     tag,
@@ -186,6 +220,9 @@ _DerObject _readDerObject(Uint8List bytes, int offset) {
 }
 
 _DerLength _readDerLength(Uint8List bytes, int offset) {
+  if (offset < 0 || offset >= bytes.length) {
+    throw const FormatException('Unexpected end of DER length');
+  }
   final first = bytes[offset];
   if (first < 0x80) {
     return _DerLength(offset + 1, first);
@@ -193,20 +230,33 @@ _DerLength _readDerLength(Uint8List bytes, int offset) {
 
   final lengthBytesCount = first & 0x7f;
   if (lengthBytesCount == 0 || lengthBytesCount > 4) {
-    throw ArgumentError('Unsupported DER length encoding');
+    throw const FormatException('Unsupported DER length encoding');
+  }
+  if (bytes.length - offset - 1 < lengthBytesCount) {
+    throw const FormatException('Truncated DER length encoding');
+  }
+  if (bytes[offset + 1] == 0x00) {
+    throw const FormatException('Non-minimal DER length encoding');
   }
 
   var length = 0;
   for (var i = 0; i < lengthBytesCount; i++) {
-    length = (length << 8) | bytes[offset + 1 + i];
+    length = length * 256 + bytes[offset + 1 + i];
+  }
+  if (length < 0x80) {
+    throw const FormatException('Non-minimal DER length encoding');
   }
   return _DerLength(offset + 1 + lengthBytesCount, length);
 }
 
-BigInt _unsignedBigIntFromDerInteger(Uint8List bytes) {
-  final unsigned = (bytes.isNotEmpty && bytes[0] == 0x00)
-      ? Uint8List.sublistView(bytes, 1)
-      : bytes;
+BigInt _positiveBigIntFromDerInteger(Uint8List bytes) {
+  if (bytes.isEmpty || (bytes[0] & 0x80) != 0) {
+    throw const FormatException('DER integer must be positive');
+  }
+  if (bytes.length > 1 && bytes[0] == 0x00 && (bytes[1] & 0x80) == 0) {
+    throw const FormatException('Non-minimal DER integer encoding');
+  }
+  final unsigned = bytes[0] == 0x00 ? Uint8List.sublistView(bytes, 1) : bytes;
   return _bytesToBigInt(unsigned);
 }
 
