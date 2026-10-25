@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
 import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
-import 'package:mysql_dart/src/utils/tuple2.dart';
 
 /// Constantes que representam os tipos de coluna do MySQL conforme o protocolo.
 const mysqlColumnTypeDecimal = 0x00;
@@ -281,13 +280,13 @@ class MySQLColumnType {
 /// [buffer]: O [Uint8List] original contendo os dados.
 /// [startOffset]: A posição inicial no buffer para leitura.
 ///
-/// Retorna uma [Tuple2] contendo:
-/// - item1: O valor lido da coluna (geralmente convertido para string ou,
+/// Retorna um record `(dynamic, int)` contendo:
+/// - `$1`: O valor lido da coluna (geralmente convertido para string ou,
 ///   em casos binários, um [Uint8List]).
-/// - item2: O número de bytes consumidos durante a leitura.
+/// - `$2`: O número de bytes consumidos durante a leitura.
 ///
 /// Caso o tipo da coluna não seja implementado, lança [MySQLProtocolException].
-Tuple2<dynamic, int> parseBinaryColumnData(
+(dynamic, int) parseBinaryColumnData(
   int columnType,
   ByteData data,
   Uint8List buffer,
@@ -299,10 +298,9 @@ Tuple2<dynamic, int> parseBinaryColumnData(
   switch (columnType) {
     case mysqlColumnTypeTiny:
       {
-        final value = unsigned
-            ? data.getUint8(startOffset)
-            : data.getInt8(startOffset);
-        return Tuple2(value.toString(), 1);
+        final value =
+            unsigned ? data.getUint8(startOffset) : data.getInt8(startOffset);
+        return (value.toString(), 1);
       }
 
     case mysqlColumnTypeShort:
@@ -310,7 +308,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         final value = unsigned
             ? data.getUint16(startOffset, Endian.little)
             : data.getInt16(startOffset, Endian.little);
-        return Tuple2(value.toString(), 2);
+        return (value.toString(), 2);
       }
 
     case mysqlColumnTypeLong:
@@ -319,7 +317,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         final value = unsigned
             ? data.getUint32(startOffset, Endian.little)
             : data.getInt32(startOffset, Endian.little);
-        return Tuple2(value.toString(), 4);
+        return (value.toString(), 4);
       }
 
     case mysqlColumnTypeLongLong:
@@ -327,21 +325,21 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         final value = data.getInt64(startOffset, Endian.little);
         if (unsigned && value < 0) {
           // Above 2^63 - 1: the two's-complement int64 plus 2^64.
-          return Tuple2((BigInt.from(value) + (BigInt.one << 64)).toString(), 8);
+          return ((BigInt.from(value) + (BigInt.one << 64)).toString(), 8);
         }
-        return Tuple2(value.toString(), 8);
+        return (value.toString(), 8);
       }
 
     case mysqlColumnTypeFloat:
       {
         final value = data.getFloat32(startOffset, Endian.little);
-        return Tuple2(value.toString(), 4);
+        return (value.toString(), 4);
       }
 
     case mysqlColumnTypeDouble:
       {
         final value = data.getFloat64(startOffset, Endian.little);
-        return Tuple2(value.toString(), 8);
+        return (value.toString(), 8);
       }
 
     case mysqlColumnTypeDate:
@@ -355,7 +353,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
 
         // Quando numOfBytes == 0, MySQL envia datas/timestamps '0000-00-00 00:00:00'
         if (numOfBytes == 0) {
-          return Tuple2("0000-00-00 00:00:00", 1);
+          return ("0000-00-00 00:00:00", 1);
         }
 
         var year = 0, month = 0, day = 0;
@@ -398,7 +396,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         }
 
         final consumed = startOffset - initialOffset;
-        return Tuple2(result.toString(), consumed);
+        return (result.toString(), consumed);
       }
 
     case mysqlColumnTypeTime:
@@ -410,7 +408,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         startOffset += 1;
 
         if (numOfBytes == 0) {
-          return Tuple2("00:00:00", 1);
+          return ("00:00:00", 1);
         }
 
         var isNegative = false;
@@ -448,7 +446,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
         }
 
         final consumed = startOffset - initialOffset;
-        return Tuple2(timeResult.toString(), consumed);
+        return (timeResult.toString(), consumed);
       }
 
     case mysqlColumnTypeString:
@@ -460,7 +458,7 @@ Tuple2<dynamic, int> parseBinaryColumnData(
       {
         // Dados textuais length-encoded
         final result = buffer.getUtf8LengthEncodedString(startOffset);
-        return Tuple2(result.item1, result.item2);
+        return (result.$1, result.$2);
       }
 
     case mysqlColumnTypeDecimal:
@@ -468,8 +466,8 @@ Tuple2<dynamic, int> parseBinaryColumnData(
       {
         final lengthEncoded = buffer.getLengthEncodedBytes(startOffset);
         // Valores numéricos vêm como texto no protocolo textual; decodifique em UTF-8.
-        final strValue = utf8.decode(lengthEncoded.item1, allowMalformed: true);
-        return Tuple2(strValue, lengthEncoded.item2);
+        final strValue = utf8.decode(lengthEncoded.$1, allowMalformed: true);
+        return (strValue, lengthEncoded.$2);
       }
 
     case mysqlColumnTypeLongBlob:
@@ -481,14 +479,14 @@ Tuple2<dynamic, int> parseBinaryColumnData(
       {
         // Para dados binários, retorna os bytes crus
         final lengthEncoded = buffer.getLengthEncodedBytes(startOffset);
-        return Tuple2(lengthEncoded.item1, lengthEncoded.item2);
+        return (lengthEncoded.$1, lengthEncoded.$2);
       }
 
     case mysqlColumnTypeYear:
       {
         // Lê 2 bytes para YEAR
         final yearValue = data.getUint16(startOffset, Endian.little);
-        return Tuple2(yearValue.toString(), 2);
+        return (yearValue.toString(), 2);
       }
   }
 

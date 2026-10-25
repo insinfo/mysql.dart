@@ -83,31 +83,31 @@ class MySQLColumnDefinitionPacket extends MySQLPacketPayload {
 
     // 1) Lê catalog (length-encoded string)
     final catalogLE = buffer.getUtf8LengthEncodedString(offset);
-    offset += catalogLE.item2;
+    offset += catalogLE.$2;
 
     // 2) Lê schema (length-encoded string)
     final schemaLE = buffer.getUtf8LengthEncodedString(offset);
-    offset += schemaLE.item2;
+    offset += schemaLE.$2;
 
     // 3) Lê table (length-encoded string)
     final tableLE = buffer.getUtf8LengthEncodedString(offset);
-    offset += tableLE.item2;
+    offset += tableLE.$2;
 
     // 4) Lê org_table (length-encoded string)
     final orgTableLE = buffer.getUtf8LengthEncodedString(offset);
-    offset += orgTableLE.item2;
+    offset += orgTableLE.$2;
 
     // 5) Lê name (length-encoded string)
     final nameLE = buffer.getUtf8LengthEncodedString(offset);
-    offset += nameLE.item2;
+    offset += nameLE.$2;
 
     // 6) Lê org_name (length-encoded string)
     final orgNameLE = buffer.getUtf8LengthEncodedString(offset);
-    offset += orgNameLE.item2;
+    offset += orgNameLE.$2;
 
     // 7) Lê lengthOfFixedLengthFields (geralmente 0x0c)
     final lengthOfFixedLengthFields = buffer.getVariableEncIntAt(offset);
-    offset += lengthOfFixedLengthFields.item2;
+    offset += lengthOfFixedLengthFields.$2;
 
     // 8) Lê charset (2 bytes, little-endian)
     final charset = byteData.getUint16(offset, Endian.little);
@@ -134,12 +134,12 @@ class MySQLColumnDefinitionPacket extends MySQLPacketPayload {
 
     // Retorna a instância
     return MySQLColumnDefinitionPacket(
-      catalog: catalogLE.item1,
-      schema: schemaLE.item1,
-      table: tableLE.item1,
-      orgTable: orgTableLE.item1,
-      name: nameLE.item1,
-      orgName: orgNameLE.item1,
+      catalog: catalogLE.$1,
+      schema: schemaLE.$1,
+      table: tableLE.$1,
+      orgTable: orgTableLE.$1,
+      name: nameLE.$1,
+      orgName: orgNameLE.$1,
       charset: charset,
       columnLength: columnLength,
       type: MySQLColumnType.create(colType),

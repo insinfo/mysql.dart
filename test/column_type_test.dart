@@ -563,9 +563,9 @@ void main() {
         0,
       );
 
-      expect(result.item1, jsonValue);
-      expect(result.item2, buffer.length);
-      expect(jsonDecode(result.item1 as String), {
+      expect(result.$1, jsonValue);
+      expect(result.$2, buffer.length);
+      expect(jsonDecode(result.$1 as String), {
         'name': 'Alice',
         'age': 30,
       });
