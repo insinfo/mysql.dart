@@ -3,11 +3,17 @@ import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
+/// A packet ended before the value being decoded: a protocol error, never
+/// a shorter value.
+Never _truncated(String what) =>
+    throw MySQLProtocolException('Truncated packet while decoding $what');
+
 /// Extensão para [Uint8List] contendo métodos auxiliares para ler strings e
 /// dados length-encoded conforme o protocolo MySQL.
 extension MySQLUint8ListExtension on Uint8List {
   @pragma('vm:prefer-inline')
   (BigInt, int) getVariableEncIntAt(int startOffset) {
+    if (startOffset >= length) _truncated('a length-encoded integer');
     final firstByte = this[startOffset];
 
     if (firstByte < 0xfb) {
@@ -15,11 +21,13 @@ extension MySQLUint8ListExtension on Uint8List {
     }
 
     if (firstByte == 0xfc) {
+      if (startOffset + 3 > length) _truncated('a length-encoded integer');
       final value = this[startOffset + 1] | (this[startOffset + 2] << 8);
       return (BigInt.from(value), 3);
     }
 
     if (firstByte == 0xfd) {
+      if (startOffset + 4 > length) _truncated('a length-encoded integer');
       final value = this[startOffset + 1] |
           (this[startOffset + 2] << 8) |
           (this[startOffset + 3] << 16);
@@ -27,6 +35,7 @@ extension MySQLUint8ListExtension on Uint8List {
     }
 
     if (firstByte == 0xfe) {
+      if (startOffset + 9 > length) _truncated('a length-encoded integer');
       final low = this[startOffset + 1] |
           (this[startOffset + 2] << 8) |
           (this[startOffset + 3] << 16) |
@@ -87,6 +96,9 @@ extension MySQLUint8ListExtension on Uint8List {
   (String, int) getUtf8LengthEncodedString(int startOffset) {
     final strLength = getVariableEncIntAt(startOffset);
     final stringOffset = startOffset + strLength.$2;
+    if (strLength.$1 > BigInt.from(length - stringOffset)) {
+      _truncated('a length-encoded string');
+    }
 
     // Lê a string exatamente com `strLength.$1` bytes.
     final tmp2 = Uint8List.sublistView(
@@ -111,6 +123,10 @@ extension MySQLUint8ListExtension on Uint8List {
   /// - $2: O número total de bytes consumidos (tamanho do inteiro + tamanho dos bytes).
   (Uint8List, int) getLengthEncodedBytes(int startOffset) {
     final lengthTuple = getVariableEncIntAt(startOffset);
+    if (lengthTuple.$1 >
+        BigInt.from(this.length - startOffset - lengthTuple.$2)) {
+      _truncated('length-encoded bytes');
+    }
     final length = lengthTuple.$1.toInt();
     final totalLength = lengthTuple.$2 + length;
 
@@ -139,6 +155,7 @@ extension MySQLByteDataExtension on ByteData {
   /// - $1: valor lido como [BigInt].
   /// - $2: número total de bytes consumidos (1 para o header, +2/+3/+8, dependendo do caso).
   (BigInt, int) getVariableEncInt(int startOffset) {
+    if (startOffset >= lengthInBytes) _truncated('a length-encoded integer');
     final firstByte = getUint8(startOffset);
 
     if (firstByte < 0xfb) {
@@ -147,16 +164,25 @@ extension MySQLByteDataExtension on ByteData {
     }
 
     if (firstByte == 0xfc) {
+      if (startOffset + 3 > lengthInBytes) {
+        _truncated('a length-encoded integer');
+      }
       return (BigInt.from(getUint16(startOffset + 1, Endian.little)), 3);
     }
 
     if (firstByte == 0xfd) {
+      if (startOffset + 4 > lengthInBytes) {
+        _truncated('a length-encoded integer');
+      }
       final value = getUint16(startOffset + 1, Endian.little) |
           (getUint8(startOffset + 3) << 16);
       return (BigInt.from(value), 4);
     }
 
     if (firstByte == 0xfe) {
+      if (startOffset + 9 > lengthInBytes) {
+        _truncated('a length-encoded integer');
+      }
       final low = getUint32(startOffset + 1, Endian.little);
       final high = getUint32(startOffset + 5, Endian.little);
       return ((BigInt.from(high) << 32) | BigInt.from(low), 9);
@@ -169,6 +195,7 @@ extension MySQLByteDataExtension on ByteData {
 
   /// Lê um inteiro de 2 bytes (little-endian) a partir de [startOffset].
   int getInt2(int startOffset) {
+    if (startOffset + 2 > lengthInBytes) _truncated('an int<2>');
     return getUint8(startOffset) | (getUint8(startOffset + 1) << 8);
   }
 
@@ -177,6 +204,7 @@ extension MySQLByteDataExtension on ByteData {
   /// Esse formato (3 bytes) ocorre em algumas partes do protocolo
   /// que usam "int<3>" para valores como comprimentos ou contagens menores que 16M.
   int getInt3(int startOffset) {
+    if (startOffset + 3 > lengthInBytes) _truncated('an int<3>');
     return getUint8(startOffset) |
         (getUint8(startOffset + 1) << 8) |
         (getUint8(startOffset + 2) << 16);

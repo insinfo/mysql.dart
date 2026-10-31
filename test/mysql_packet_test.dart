@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/src/utils/hex.dart';
 import 'package:test/test.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
@@ -6,6 +7,66 @@ import 'package:mysql_dart/mysql_protocol_extension.dart';
 import 'package:mysql_dart/src/utils/byte_data_writer.dart';
 
 void main() {
+  // From #8 (Kevin Moore): a truncated packet is a protocol error, never a
+  // shorter value; an error packet sent before the handshake has no SQLSTATE.
+  group("truncated packets and error packets", () {
+    test("truncated length-encoded ints throw MySQLProtocolException", () {
+      for (final sample in <List<int>>[
+        [],
+        [0xfc, 0x01],
+        [0xfd, 0x01, 0x02],
+        [0xfe, 0x01, 0x02, 0x03, 0x04],
+      ]) {
+        final bytes = Uint8List.fromList(sample);
+        expect(() => bytes.getVariableEncIntAt(0),
+            throwsA(isA<MySQLProtocolException>()),
+            reason: '$sample');
+        expect(() => ByteData.sublistView(bytes).getVariableEncInt(0),
+            throwsA(isA<MySQLProtocolException>()),
+            reason: '$sample');
+      }
+    });
+
+    test("a length-encoded value longer than the packet throws", () {
+      // Declares 50 bytes, has 4: returning "abcd" would hide the corruption.
+      final truncated = Uint8List.fromList([50, 0x61, 0x62, 0x63, 0x64]);
+      expect(() => truncated.getUtf8LengthEncodedString(0),
+          throwsA(isA<MySQLProtocolException>()));
+      expect(() => truncated.getLengthEncodedBytes(0),
+          throwsA(isA<MySQLProtocolException>()));
+
+      final whole = Uint8List.fromList([4, 0x61, 0x62, 0x63, 0x64]);
+      expect(whole.getUtf8LengthEncodedString(0), ("abcd", 5));
+      expect(whole.getLengthEncodedBytes(0).$1, [0x61, 0x62, 0x63, 0x64]);
+    });
+
+    test("an error packet shorter than its code throws", () {
+      expect(() => MySQLPacketError.decode(Uint8List.fromList([0xff, 0x01])),
+          throwsA(isA<MySQLProtocolException>()));
+    });
+
+    test("an error packet with SQLSTATE keeps the whole message", () {
+      final error = MySQLPacketError.decode(Uint8List.fromList([
+        0xff, 0x7a, 0x04, // 1146
+        ..."#42S02".codeUnits,
+        ..."Table 'x' doesn't exist".codeUnits,
+      ]));
+      expect(error.errorCode, 1146);
+      expect(error.errorMessage, "Table 'x' doesn't exist");
+    });
+
+    test("an error packet without SQLSTATE (before the handshake) keeps "
+        "the whole message", () {
+      final error = MySQLPacketError.decode(Uint8List.fromList([
+        0xff, 0x10, 0x04, // 1040
+        ..."Too many connections".codeUnits,
+      ]));
+      expect(error.errorCode, 1040);
+      // The 6 bytes skipped for the SQLSTATE cut "Too ma" before.
+      expect(error.errorMessage, "Too many connections");
+    });
+  });
+
   group("testing variable length int", () {
     group('test decoding one byte ints', () {
       test("decoding int value 16", () {

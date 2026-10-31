@@ -32,7 +32,9 @@ class MySQLPacketError extends MySQLPacketPayload {
   /// O formato esperado do buffer é:
   /// 1. Header: 1 byte (geralmente 0xff).
   /// 2. Error code: 2 bytes.
-  /// 3. SQL state marker e SQL state: 1 + 5 bytes (total de 6 bytes, ignorados).
+  /// 3. SQL state marker e SQL state: 1 + 5 bytes (total de 6 bytes, ignorados),
+  ///    presentes só quando o marcador `#` está lá: um erro enviado antes do
+  ///    handshake (como "Too many connections") não os tem.
   /// 4. Error message: o restante do buffer é interpretado como uma string UTF-8.
   factory MySQLPacketError.decode(Uint8List buffer) {
     final byteData = ByteData.sublistView(buffer);
@@ -46,8 +48,11 @@ class MySQLPacketError extends MySQLPacketPayload {
     final errorCode = byteData.getInt2(offset);
     offset += 2;
 
-    // 3) Pula o marcador de SQL state e o SQL state (1 + 5 bytes = 6 bytes)
-    offset += 6;
+    // 3) Pula o marcador de SQL state ('#') e o SQL state (1 + 5 bytes),
+    // quando presentes; sem eles, os 6 bytes eram o início da mensagem.
+    if (offset < buffer.length && buffer[offset] == 0x23) {
+      offset += 6;
+    }
 
     // 4) O restante do buffer corresponde à mensagem de erro
     final errorMessage = buffer.getUtf8StringEOF(offset);
