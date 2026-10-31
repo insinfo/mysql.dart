@@ -266,6 +266,7 @@ class MySQLConnectionPool {
 
   Future<_PooledConnection> _createAndTrackConnection() async {
     _pendingConnections++;
+    var created = false;
     try {
       final conn = await MySQLConnection.createConnection(
         host: host,
@@ -297,13 +298,19 @@ class MySQLConnectionPool {
       _activeConnections.add(pooled);
 
       conn.onClose(() {
-        _idleConnections.remove(pooled);
-        _activeConnections.remove(pooled);
+        // Closed by the server: its slot is free for a waiting task.
+        final wasIdle = _idleConnections.remove(pooled);
+        final wasActive = _activeConnections.remove(pooled);
+        if (wasIdle || wasActive) _wakeNextWaiter();
       });
 
+      created = true;
       return pooled;
     } finally {
       _pendingConnections--;
+      // A failed attempt frees its slot without returning a connection; a
+      // task waiting for a slot waited forever (after a server restart).
+      if (!created) _wakeNextWaiter();
     }
   }
 
