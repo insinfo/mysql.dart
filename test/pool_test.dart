@@ -323,6 +323,45 @@ void main() {
     }
   });
 
+  test('Tarefa na fila é atendida quando a criação de outra conexão falha',
+      () async {
+    // A vaga da conexão que falhou ao abrir não acordava a fila: com o
+    // servidor reiniciando, tarefas esperavam para sempre com o pool vazio.
+    var opened = 0;
+    final singlePool = MySQLConnectionPool(
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      maxConnections: 1,
+      secure: mysqlTestSecure,
+      retryOptions: const MySQLPoolRetryOptions(maxAttempts: 1),
+      onConnectionOpen: (conn) async {
+        if (opened++ == 0) {
+          // A primeira abertura demora (a tarefa B entra na fila) e falha.
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          throw StateError('falha ao abrir');
+        }
+      },
+    );
+
+    try {
+      final first = Future.sync(() =>
+          singlePool.withConnection((conn) => conn.execute('SELECT 1')));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final waiting = Future.sync(() => singlePool.withConnection((conn) async {
+            final result = await conn.execute('SELECT 2 AS v');
+            return result.rows.first.colAt(0);
+          }));
+
+      await expectLater(first, throwsStateError);
+      expect(await waiting.timeout(const Duration(seconds: 5)), '2');
+    } finally {
+      await singlePool.close();
+    }
+  });
+
   test('Respeita maxConnections enquanto testa conexões ociosas e com erro',
       () async {
     // A conexão sob o SELECT 1 do teste de saúde (idleTestThreshold zero) ou
