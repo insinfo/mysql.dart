@@ -1,3 +1,21 @@
+## 4.0.0
+
+TLS server certificates are now verified (breaking). Reported by Brett Sutton.
+
+- security, breaking: with TLS (`secure: true`, the default) any server certificate was accepted: when `onBadCertificate` was not given, the driver accepted every certificate. Anyone between the application and the server could impersonate it, read and change the traffic, and, with `caching_sha2_password` (the MySQL 8.4/9 default), get the password, which is sent in clear text inside TLS. The certificate must now chain to a root trusted by `securityContext` (the system roots by default) and name `host`; otherwise `connect()` fails with a `HandshakeException` before the credentials are sent, and its message says how to fix it
+- feat: `verifyServerCertificate` in `createConnection` and `MySQLConnectionPool` (default `true`). `false` accepts any certificate, such as the one MySQL and MariaDB generate on first start, for a server in Docker or on the same host; the traffic is still encrypted. `onBadCertificate`, when given, decides instead. A Unix socket is local and its certificate is not verified
+- security: a server that sent the greeting and then never answered the TLS handshake kept the TCP connection open after `connect(timeoutMs: ...)` timed out, and `close()` could not release it: `SecureSocket.secure` takes over the socket and its handshake cannot be aborted. TLS connections now go through a `RawSocket` the driver keeps and closes when the deadline expires, with the same throughput and latency
+- fix: `connect(timeoutMs: ...)` bounds the greeting, TLS handshake, authentication and charset setup together, and a connection that fails or times out is closed
+- feat: `socketTimeout` in `createConnection` bounds the TCP connection attempt; `MySQLConnectionPool` passes its `timeoutMs`
+- fix: the `KILL QUERY` connection of a query timeout connects to the configured host, not the resolved address, so its certificate is checked against the same name
+
+### Migrating from 3.x
+
+- Server using the certificate MySQL/MariaDB generate (Docker, same host): pass `verifyServerCertificate: false`.
+- Server with a certificate from your own CA: keep verification and trust the CA, `securityContext: SecurityContext(withTrustedRoots: true)..setTrustedCertificates('ca.pem')`.
+- Server with a certificate from a public CA that names the host you connect to: nothing to change.
+- To verify certificates while still on 3.x: pass the CA in `securityContext` and `onBadCertificate: (_) => false`.
+
 ## 3.0.3
 
 - fix: `typedAssoc()`, `typedColAt<DateTime>()` and `typedColByName<DateTime>()` turned a date `DateTime` cannot represent into another day, because `DateTime.parse` rolls an out-of-range month or day over: the zero date `0000-00-00` (WordPress drafts, `sql_mode` without NO_ZERO_DATE) came back as `-0001-11-30`, a zero month or day (`2024-05-00`) as the previous month's last day, and an invalid date stored under ALLOW_INVALID_DATES (`2024-02-30`) as March 1. Dates are now parsed strictly (the server's `YYYY-MM-DD[ hh:mm:ss[.ffffff]]`), and such a date is handled by the new `zeroDateBehavior` option
