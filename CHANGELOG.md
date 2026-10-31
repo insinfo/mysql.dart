@@ -12,6 +12,10 @@ TLS server certificates are now verified (breaking). Reported by Brett Sutton.
 - fix: a task waiting for a free slot in `MySQLConnectionPool` could wait forever: a slot freed by a connection attempt that failed, or by a connection the server closed, did not wake the waiting tasks. After a server restart, requests queued while the pool was full hung with the pool empty
 - fix: an account with an empty password was rejected (`Access denied`, error 1045) on MariaDB, and on MySQL without TLS: the handshake sent a hash of the empty password instead of an empty auth response (#7, by Kevin Moore)
 - docs: `LICENSE` keeps the BSD-3-Clause notice of the original `zim32/mysql.dart` (#9, by Kevin Moore)
+- breaking: the decoders of `package:mysql_dart/mysql_protocol_extension.dart` and `package:mysql_dart/mysql_protocol.dart` return Dart 3 records instead of the internal `Tuple2`: use `.$1`/`.$2` instead of `.item1`/`.item2` (#10, by Kevin Moore). `MySQLConnection` and `MySQLConnectionPool` are not affected
+- fix: an error sent by the server before the handshake (1040 "Too many connections", a blocked host) lost the first 6 characters of its message, skipped as a SQLSTATE it does not have (from #8, by Kevin Moore)
+- fix: a length-encoded field running past the end of a packet throws `MySQLProtocolException` naming the field, instead of a `RangeError` (from #8)
+- test: multi-statement batches with OK results, a failing statement, `lastInsertID` per result, a prepared statement after a batch and `CALL` (from #6, by Paschalis P)
 
 ### Migrating from 3.x
 
