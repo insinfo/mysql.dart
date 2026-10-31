@@ -404,6 +404,15 @@ TLS, set `MYSQL_CA_CERT` to the CA that signed the server certificate, which
 must name `MYSQL_HOST`; `.github/scripts/generate-test-certs.sh` creates such a
 CA and certificate.
 
+The pool test that restarts the database server runs only when
+`MYSQL_RESTART_COMMAND` is set to a command that restarts it (run by
+PowerShell on Windows, `sh` elsewhere), for example `docker restart mysql`:
+
+```bash
+MYSQL_RESTART_COMMAND="docker restart mysql" \
+  dart test test/pool_test.dart --plain-name "recupera após reinício real"
+```
+
 ### Error handling
 
 This library throws tree types of exceptions: MySQLServerException, MySQLClientException and MySQLProtocolException.

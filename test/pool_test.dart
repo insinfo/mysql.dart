@@ -323,6 +323,54 @@ void main() {
     }
   });
 
+  test('Respeita maxConnections enquanto testa conexões ociosas e com erro',
+      () async {
+    // A conexão sob o SELECT 1 do teste de saúde (idleTestThreshold zero) ou
+    // de _canReuseAfterError não era contada: outra tarefa abria uma nova e
+    // o pool chegava a 4 conexões com maxConnections 2.
+    final limitedPool = MySQLConnectionPool(
+      host: mysqlTestHost,
+      port: mysqlTestPort,
+      userName: mysqlTestUser,
+      password: mysqlTestPassword,
+      databaseName: mysqlTestDatabase,
+      maxConnections: 2,
+      secure: mysqlTestSecure,
+      idleTestThreshold: Duration.zero,
+    );
+
+    var maxObserved = 0;
+    final sampler = Timer.periodic(const Duration(milliseconds: 1), (_) {
+      maxObserved = max(maxObserved, limitedPool.allConnectionsQty);
+    });
+
+    Future<void> runTasks(int worker) async {
+      for (var i = 0; i < 30; i++) {
+        try {
+          await limitedPool.withConnection((conn) async {
+            await conn.execute('SELECT 1');
+            if ((worker + i) % 3 == 0) throw StateError('falha no callback');
+          });
+        } on StateError {
+          // Esperado: devolve a conexão com erro.
+        }
+        // Deixa conexões ociosas entre os usos.
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+
+    try {
+      await Future.wait(List.generate(4, runTasks));
+      expect(maxObserved, lessThanOrEqualTo(2),
+          reason:
+              'O pool não deve passar de maxConnections ao testar conexões');
+      expect(limitedPool.allConnectionsQty, lessThanOrEqualTo(2));
+    } finally {
+      sampler.cancel();
+      await limitedPool.close();
+    }
+  });
+
   test('withConnection libera conexão mesmo quando há erro', () async {
     final tempPool = MySQLConnectionPool(
       host: mysqlTestHost,
@@ -449,16 +497,17 @@ void main() {
         final load = List.generate(4, (_) => queryLoop());
         await Future<void>.delayed(const Duration(milliseconds: 250));
 
-        final restart = await Process.run(
-          'powershell',
-          [
-            '-NoProfile',
-            '-ExecutionPolicy',
-            'Bypass',
-            '-Command',
-            restartCommand,
-          ],
-        ).timeout(const Duration(minutes: 2));
+        // PowerShell on Windows, sh elsewhere (CI: docker restart, systemctl).
+        final restart = await (Platform.isWindows
+                ? Process.run('powershell', [
+                    '-NoProfile',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-Command',
+                    restartCommand,
+                  ])
+                : Process.run('sh', ['-c', restartCommand]))
+            .timeout(const Duration(minutes: 2));
 
         keepRunning = false;
         await Future.wait(load);

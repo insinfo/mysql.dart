@@ -8,6 +8,7 @@ TLS server certificates are now verified (breaking). Reported by Brett Sutton.
 - fix: `connect(timeoutMs: ...)` bounds the greeting, TLS handshake, authentication and charset setup together, and a connection that fails or times out is closed
 - feat: `socketTimeout` in `createConnection` bounds the TCP connection attempt; `MySQLConnectionPool` passes its `timeoutMs`
 - fix: the `KILL QUERY` connection of a query timeout connects to the configured host, not the resolved address, so its certificate is checked against the same name
+- fix: `MySQLConnectionPool` went over `maxConnections`: a connection under the `SELECT 1` of the idle test (`idleTestThreshold`) or of the check after a failed callback, and one being closed, was not counted, so another task opened a new connection beside it (4 connections with `maxConnections: 2`). They are now counted until they are returned or closed
 
 ### Migrating from 3.x
 

@@ -84,6 +84,20 @@ jobs:
           MYSQL_CA_CERT: certs/ca-cert.pem
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm
 
+      # Separate from the suite: restarts the database server for real.
+      - name: Server restart test on MariaDB ${{ matrix.mariadb-version }}
+        if: ${{ !cancelled() }}
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: dart
+          MYSQL_PASSWORD: dart
+          MYSQL_DATABASE: banco_teste
+          MYSQL_SECURE: "true"
+          MYSQL_CA_CERT: certs/ca-cert.pem
+          MYSQL_RESTART_COMMAND: sudo systemctl restart mariadb
+        run: dart run test test/pool_test.dart --plain-name "recupera após reinício real" --chain-stack-traces --platform vm
+
   mysql:
     name: MySQL ${{ matrix.mysql-version }} (${{ matrix.sdk }})
     runs-on: ubuntu-22.04
@@ -144,3 +158,17 @@ jobs:
           MYSQL_SECURE: "true"
           MYSQL_CA_CERT: certs/ca-cert.pem
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm
+
+      # Separate from the suite: restarts the database server for real.
+      - name: Server restart test on MySQL ${{ matrix.mysql-version }}
+        if: ${{ !cancelled() }}
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3307
+          MYSQL_USER: dart
+          MYSQL_PASSWORD: dart
+          MYSQL_DATABASE: banco_teste
+          MYSQL_SECURE: "true"
+          MYSQL_CA_CERT: certs/ca-cert.pem
+          MYSQL_RESTART_COMMAND: docker restart mysql
+        run: dart run test test/pool_test.dart --plain-name "recupera após reinício real" --chain-stack-traces --platform vm

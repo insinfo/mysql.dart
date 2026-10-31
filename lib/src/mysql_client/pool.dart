@@ -242,9 +242,11 @@ class MySQLConnectionPool {
       // if there is idle connection, return it
       if (_idleConnections.isNotEmpty) {
         final pooled = _idleConnections.removeAt(0);
+        // Counted as active while it is tested: in no list, it left room
+        // for a new connection, and the pool went over maxConnections.
+        _activeConnections.add(pooled);
         if (await _ensureConnectionHealthy(pooled)) {
           pooled.markBorrowed();
-          _activeConnections.add(pooled);
           return pooled;
         }
         await _retireConnection(pooled);
@@ -307,18 +309,20 @@ class MySQLConnectionPool {
 
   Future<void> _releaseConnection(_PooledConnection pooled,
       {bool hadError = false}) async {
-    _activeConnections.remove(pooled);
     pooled.markReleased();
 
     if (hadError) {
       pooled.errorCount++;
     }
 
+    // Still active (counted) while the SELECT 1 decides its fate.
     if (hadError && !await _canReuseAfterError(pooled)) {
       await _retireConnection(pooled);
       _wakeNextWaiter();
       return;
     }
+
+    _activeConnections.remove(pooled);
 
     if (_shouldRecycle(pooled)) {
       await _retireConnection(pooled);
@@ -408,7 +412,8 @@ class MySQLConnectionPool {
 
   Future<void> _retireConnection(_PooledConnection pooled) async {
     _idleConnections.remove(pooled);
-    _activeConnections.remove(pooled);
+    // Counted until closed, so its replacement does not open beside it.
+    if (!_activeConnections.contains(pooled)) _activeConnections.add(pooled);
     try {
       if (pooled.connection.connected) {
         await pooled.connection
@@ -417,6 +422,7 @@ class MySQLConnectionPool {
       }
     } catch (_) {}
     pooled.connection.getSocket().destroy();
+    _activeConnections.remove(pooled);
   }
 
   void _wakeNextWaiter() {
