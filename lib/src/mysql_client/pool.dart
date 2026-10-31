@@ -144,6 +144,10 @@ class MySQLConnectionPool {
   /// Active + Idle connections
   int get allConnectionsQty => activeConnectionsQty + idleConnectionsQty;
 
+  // DIAG (temporary)
+  int get debugWaiters => _waiters.length;
+  int get debugPending => _pendingConnections;
+
   MySQLPoolStatus status() => MySQLPoolStatus(
         activeConnections: activeConnectionsQty,
         idleConnections: idleConnectionsQty,

@@ -474,13 +474,36 @@ void main() {
       var keepRunning = true;
       final loadErrors = <Object>[];
 
+      final t0 = DateTime.now();
+      String ts() => '${DateTime.now().difference(t0).inMilliseconds}ms';
+      final iterations = List.filled(4, 0);
+      final where = List.filled(4, 'start');
+      final diag = Timer.periodic(const Duration(seconds: 1), (_) {
+        print('DIAG ${ts()} active=${restartPool.activeConnectionsQty} '
+            'idle=${restartPool.idleConnectionsQty} '
+            'pending=${restartPool.debugPending} '
+            'waiters=${restartPool.debugWaiters} iter=$iterations '
+            'where=$where errors=${loadErrors.length}');
+      });
+      var workerSeq = 0;
+
       Future<void> queryLoop() async {
+        final w = workerSeq++;
         while (keepRunning) {
           try {
+            where[w] = 'withConnection';
             await restartPool.withConnection((conn) async {
+              where[w] = 'execute';
               await conn.execute('SELECT 1 AS ok');
+              where[w] = 'callback-done';
             });
+            iterations[w]++;
           } catch (error) {
+            where[w] = 'error';
+            if (loadErrors.length < 15) {
+              print('DIAG ${ts()} worker $w error: ${error.runtimeType}: '
+                  '${error.toString().split('\n').first}');
+            }
             loadErrors.add(error);
           }
           await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -498,6 +521,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 250));
 
         // PowerShell on Windows, sh elsewhere (CI: docker restart, systemctl).
+        print('DIAG ${ts()} restart command start');
         final restart = await (Platform.isWindows
                 ? Process.run('powershell', [
                     '-NoProfile',
@@ -509,8 +533,11 @@ void main() {
                 : Process.run('sh', ['-c', restartCommand]))
             .timeout(const Duration(minutes: 2));
 
+        print('DIAG ${ts()} restart command done exit=${restart.exitCode} '
+            'stdout=${restart.stdout} stderr=${restart.stderr}');
         keepRunning = false;
         await Future.wait(load);
+        print('DIAG ${ts()} load loops finished');
 
         expect(
           restart.exitCode,
@@ -534,6 +561,8 @@ void main() {
           }
         }
 
+        print('DIAG ${ts()} recovery done: $recoveredConnectionId');
+        diag.cancel();
         expect(
           recoveredConnectionId,
           isNotNull,
@@ -544,7 +573,9 @@ void main() {
         expect(restartPool.allConnectionsQty, lessThanOrEqualTo(2));
       } finally {
         keepRunning = false;
+        print('DIAG closing pool');
         await restartPool.close();
+        print('DIAG pool closed');
       }
     },
     skip: mysqlRestartCommand == null || mysqlRestartCommand!.trim().isEmpty
