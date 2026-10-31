@@ -9,6 +9,9 @@ TLS server certificates are now verified (breaking). Reported by Brett Sutton.
 - feat: `socketTimeout` in `createConnection` bounds the TCP connection attempt; `MySQLConnectionPool` passes its `timeoutMs`
 - fix: the `KILL QUERY` connection of a query timeout connects to the configured host, not the resolved address, so its certificate is checked against the same name
 - fix: `MySQLConnectionPool` went over `maxConnections`: a connection under the `SELECT 1` of the idle test (`idleTestThreshold`) or of the check after a failed callback, and one being closed, was not counted, so another task opened a new connection beside it (4 connections with `maxConnections: 2`). They are now counted until they are returned or closed
+- fix: a task waiting for a free slot in `MySQLConnectionPool` could wait forever: a slot freed by a connection attempt that failed, or by a connection the server closed, did not wake the waiting tasks. After a server restart, requests queued while the pool was full hung with the pool empty
+- fix: an account with an empty password was rejected (`Access denied`, error 1045) on MariaDB, and on MySQL without TLS: the handshake sent a hash of the empty password instead of an empty auth response (#7, by Kevin Moore)
+- docs: `LICENSE` keeps the BSD-3-Clause notice of the original `zim32/mysql.dart` (#9, by Kevin Moore)
 
 ### Migrating from 3.x
 
