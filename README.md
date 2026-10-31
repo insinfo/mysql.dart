@@ -176,6 +176,52 @@ await conn.connect();
 **Warning**
 By default connection is secure. If you don't want to use SSL (TLS) connection, pass *secure: false*
 
+#### Network exposure
+
+Exposing a database server to the internet is not recommended. Keep MySQL and
+MariaDB on private, controlled networks: the same host, a Docker or Kubernetes
+network, a private VPC/LAN, or behind a VPN or SSH tunnel, with the port closed
+to the outside by a firewall. TLS protects the traffic, but it does not replace
+network isolation.
+
+#### TLS certificate verification (4.0.0+)
+
+With TLS the server certificate is verified, as a browser does: it must chain
+to a trusted root and name the `host` you connect to. Otherwise the connection
+fails with a `HandshakeException` before the user name and password are sent.
+
+```dart
+// Server in Docker or on the same host, using the certificate MySQL/MariaDB
+// generate on first start: encrypted, but the certificate is not checked.
+final conn = await MySQLConnection.createConnection(
+  host: 'localhost',
+  port: 3306,
+  userName: 'user',
+  password: 'secret',
+  verifyServerCertificate: false,
+);
+
+// Server with a certificate from your own CA: keep verification, trust the CA.
+final conn = await MySQLConnection.createConnection(
+  host: 'db.internal',
+  port: 3306,
+  userName: 'user',
+  password: 'secret',
+  securityContext: SecurityContext(withTrustedRoots: true)
+    ..setTrustedCertificates('ca.pem'),
+);
+```
+
+`verifyServerCertificate: false` is fine when nobody can sit between the
+application and the server (same host, a Docker network). Across a network it
+lets anyone in the path impersonate the server and read the password. A
+`onBadCertificate` callback, when given, decides instead of the flag.
+`MySQLConnectionPool` takes the same options.
+
+`socketTimeout` bounds the TCP connection attempt; `connect(timeoutMs: ...)`
+bounds the greeting, TLS handshake and authentication, and closes the
+connection when it expires.
+
 For MySQL 8.4+ / 9.x with `caching_sha2_password`, non-TLS connections usually need one of:
 - `serverPublicKey`: pin the server RSA public key and encrypt the password safely.
 - `allowPublicKeyRetrieval: true`: request the RSA public key from the server during auth.
@@ -351,6 +397,12 @@ To run tests execute
 ```bash
 dart test
 ```
+
+The integration tests read `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`,
+`MYSQL_PASSWORD`, `MYSQL_DATABASE` and `MYSQL_SECURE` (default `true`). With
+TLS, set `MYSQL_CA_CERT` to the CA that signed the server certificate, which
+must name `MYSQL_HOST`; `.github/scripts/generate-test-certs.sh` creates such a
+CA and certificate.
 
 ### Error handling
 

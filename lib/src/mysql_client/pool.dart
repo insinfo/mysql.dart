@@ -68,6 +68,7 @@ class MySQLConnectionPool {
   final bool secure;
   final SecurityContext? securityContext;
   final bool Function(X509Certificate certificate)? onBadCertificate;
+  final bool verifyServerCertificate;
   final bool allowPublicKeyRetrieval;
   final String? serverPublicKey;
   final String collation;
@@ -91,7 +92,11 @@ class MySQLConnectionPool {
   ///
   /// Almost all parameters are identical to [MySQLConnection.createConnection]
   /// Pass [maxConnections] to tell pool maximum number of connections it can use
-  /// You can specify [timeoutMs], it will be passed to [MySQLConnection.connect] method when creating new connections
+  /// [timeoutMs] bounds both the TCP connection attempt and
+  /// [MySQLConnection.connect] when creating new connections.
+  /// [verifyServerCertificate] (default true): see
+  /// [MySQLConnection.createConnection]; pass false for a server whose
+  /// certificate cannot be verified (Docker, same host).
   /// [zeroDateBehavior] is passed to every connection; see
   /// [MySQLConnection.createConnection].
   MySQLConnectionPool({
@@ -106,6 +111,7 @@ class MySQLConnectionPool {
     this.timeoutMs = 10000,
     this.securityContext,
     this.onBadCertificate,
+    this.verifyServerCertificate = true,
     this.allowPublicKeyRetrieval = false,
     this.serverPublicKey,
     this.idleTestThreshold = const Duration(minutes: 1),
@@ -269,6 +275,8 @@ class MySQLConnectionPool {
         collation: collation,
         securityContext: securityContext,
         onBadCertificate: onBadCertificate,
+        verifyServerCertificate: verifyServerCertificate,
+        socketTimeout: Duration(milliseconds: timeoutMs),
         allowPublicKeyRetrieval: allowPublicKeyRetrieval,
         serverPublicKey: serverPublicKey,
         autoPreparedStatementCacheCapacity: autoPreparedStatementCacheCapacity,

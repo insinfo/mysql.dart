@@ -21,27 +21,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Generate SSL certificates
-        run: |
-          mkdir certs
-
-          openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout certs/ca-key.pem \
-            -out certs/ca-cert.pem \
-            -days 365 \
-            -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=MyTestCA"
-
-          openssl req -newkey rsa:2048 -nodes \
-            -keyout certs/server-key.pem \
-            -out certs/server-req.pem \
-            -subj "/C=BR/ST=Rio de Janeiro/L=Rio das Ostras/O=PMRO/OU=ASCOMTI/CN=localhost"
-
-          openssl x509 -req \
-            -in certs/server-req.pem \
-            -CA certs/ca-cert.pem \
-            -CAkey certs/ca-key.pem \
-            -CAcreateserial \
-            -out certs/server-cert.pem \
-            -days 365
+        run: .github/scripts/generate-test-certs.sh
 
       - name: Create MariaDB SSL config file
         run: |
@@ -101,6 +81,7 @@ jobs:
           MYSQL_PASSWORD: dart
           MYSQL_DATABASE: banco_teste
           MYSQL_SECURE: "true"
+          MYSQL_CA_CERT: certs/ca-cert.pem
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm
 
   mysql:
@@ -112,25 +93,38 @@ jobs:
         sdk: [3.6.0]
         mysql-version: ['9', '9.7']
 
-    services:
-      mysql:
-        image: mysql:${{ matrix.mysql-version }}
-        env:
-          MYSQL_ROOT_PASSWORD: dart
-          MYSQL_DATABASE: banco_teste
-          MYSQL_USER: dart
-          MYSQL_PASSWORD: dart
-        ports:
-          - 3307:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost -uroot -pdart --silent"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=12
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Generate SSL certificates
+        run: .github/scripts/generate-test-certs.sh
+
+      # Started here rather than as a service: the server needs the
+      # certificates generated above, signed by the CA the tests trust.
+      - name: Start MySQL ${{ matrix.mysql-version }} with TLS
+        run: |
+          chmod 644 certs/*.pem
+          docker run -d --name mysql -p 3307:3306 \
+            -e MYSQL_ROOT_PASSWORD=dart \
+            -e MYSQL_DATABASE=banco_teste \
+            -e MYSQL_USER=dart \
+            -e MYSQL_PASSWORD=dart \
+            -v "$PWD/certs:/etc/mysql/certs:ro" \
+            mysql:${{ matrix.mysql-version }} \
+            --ssl-ca=/etc/mysql/certs/ca-cert.pem \
+            --ssl-cert=/etc/mysql/certs/server-cert.pem \
+            --ssl-key=/etc/mysql/certs/server-key.pem
+          # The entrypoint's first start skips TCP; this waits for the real one.
+          for i in $(seq 1 90); do
+            if docker exec mysql mysql -h127.0.0.1 -udart -pdart -e 'SELECT 1' >/dev/null 2>&1; then
+              docker exec mysql mysql -h127.0.0.1 -udart -pdart -e "SELECT VERSION(); SHOW STATUS LIKE 'Ssl_cipher'"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs mysql
+          exit 1
 
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
@@ -148,4 +142,5 @@ jobs:
           MYSQL_PASSWORD: dart
           MYSQL_DATABASE: banco_teste
           MYSQL_SECURE: "true"
+          MYSQL_CA_CERT: certs/ca-cert.pem
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm

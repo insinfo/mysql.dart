@@ -13,8 +13,24 @@ String get mysqlTestPassword =>
 String get mysqlTestDatabase =>
     Platform.environment['MYSQL_DATABASE'] ?? 'banco_teste';
 
-bool get mysqlTestSecure =>
-    _parseBool(Platform.environment['MYSQL_SECURE'], defaultValue: true);
+bool _testCaLoaded = false;
+
+/// With TLS the server certificate is verified, so the suite trusts the CA
+/// in MYSQL_CA_CERT (the one that signed the test server's certificate).
+bool get mysqlTestSecure {
+  final secure =
+      _parseBool(Platform.environment['MYSQL_SECURE'], defaultValue: true);
+  if (secure && !_testCaLoaded) {
+    _testCaLoaded = true;
+    final ca = Platform.environment['MYSQL_CA_CERT'];
+    if (ca != null && ca.isNotEmpty) {
+      SecurityContext.defaultContext.setTrustedCertificates(ca);
+    }
+  }
+  return secure;
+}
+
+String? get mysqlTestCaCert => Platform.environment['MYSQL_CA_CERT'];
 
 String? get mysqlRestartCommand =>
     Platform.environment['MYSQL_RESTART_COMMAND'];

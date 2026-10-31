@@ -7,6 +7,7 @@ import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
 import 'caching_sha2_auth.dart';
+import 'raw_socket_adapter.dart';
 import 'zero_date_behavior.dart';
 
 enum _MySQLConnectionState {
@@ -115,6 +116,13 @@ class MySQLConnection {
 
   SecurityContext? _securityContext;
   bool Function(X509Certificate certificate)? _onBadCertificate;
+  bool _verifyServerCertificate = true;
+  Duration? _socketTimeout;
+
+  /// Host and port as given to [createConnection]: the TLS certificate is
+  /// checked against this host, and `KILL QUERY` connects to it.
+  dynamic _host;
+  int _port = 0;
   final bool _allowPublicKeyRetrieval;
   final String? _serverPublicKey;
   Uint8List? _authSeed;
@@ -156,6 +164,20 @@ class MySQLConnection {
   /// [userName] database user name.
   /// [password] user password.
   /// [secure] If true - TLS will be used, if false - ordinary TCL connection.
+  ///
+  /// [verifyServerCertificate] (default true): with TLS, the server
+  /// certificate must chain to a root trusted by [securityContext] (the
+  /// system roots by default) and name [host]; otherwise the connection
+  /// fails before the user name and password are sent. Pass false to accept
+  /// any certificate, such as the one MySQL and MariaDB generate on first
+  /// start (Docker, a server on the same host): the traffic is still
+  /// encrypted, but nothing proves it reaches the right server. To keep
+  /// verification with a private CA, add the CA to [securityContext]
+  /// instead. [onBadCertificate], when given, decides instead of this flag.
+  /// A Unix socket is local, so its certificate is not verified.
+  ///
+  /// [socketTimeout] bounds the TCP connection attempt (no limit by default);
+  /// [connect]'s `timeoutMs` bounds the rest.
   /// [databaseName] Optional database name to connect to.
   /// [collation] Optional collaction to use.
   ///
@@ -185,11 +207,13 @@ class MySQLConnection {
     String collation = 'utf8mb4_general_ci',
     SecurityContext? securityContext,
     bool Function(X509Certificate certificate)? onBadCertificate,
+    bool verifyServerCertificate = true,
     bool allowPublicKeyRetrieval = false,
     String? serverPublicKey,
     int autoPreparedStatementCacheCapacity = 32,
     bool queueConcurrentCalls = true,
     ZeroDateBehavior zeroDateBehavior = ZeroDateBehavior.convertToNull,
+    Duration? socketTimeout,
   }) async {
     if (autoPreparedStatementCacheCapacity < 1) {
       throw ArgumentError.value(
@@ -201,7 +225,12 @@ class MySQLConnection {
 
     // Logger.level = loggingLevel;
     // logger.d("Establishing socket connection");
-    final Socket socket = await Socket.connect(host, port);
+    // TLS goes through RawSocket, which the driver can close during a
+    // handshake the server never answers (see RawSocketAdapter).
+    final Socket socket = secure
+        ? RawSocketAdapter(
+            await RawSocket.connect(host, port, timeout: socketTimeout))
+        : await Socket.connect(host, port, timeout: socketTimeout);
     // logger.d("Socket connection established");
     if (socket.address.type != InternetAddressType.unix) {
       // no support for extensions on sockets
@@ -225,6 +254,10 @@ class MySQLConnection {
     // Armazena os parâmetros de SSL no cliente (adicione esses campos na classe)
     client._securityContext = securityContext;
     client._onBadCertificate = onBadCertificate;
+    client._verifyServerCertificate = verifyServerCertificate;
+    client._socketTimeout = socketTimeout;
+    client._host = host;
+    client._port = port;
 
     return client;
   }
@@ -251,7 +284,9 @@ class MySQLConnection {
 
   /// Initiate connection to database. To close connection, invoke [MySQLConnection.close] method.
   ///
-  /// Default [timeoutMs] is 10000 milliseconds
+  /// Default [timeoutMs] is 10000 milliseconds. It bounds the greeting, the
+  /// TLS handshake, authentication and the charset setup together. A
+  /// connection that fails or times out is closed and cannot be reused.
   Future<void> connect({
     int timeoutMs = 10000,
     bool setCharsetOnConnect = true,
@@ -266,16 +301,33 @@ class MySQLConnection {
     _readyCompleter = Completer<void>();
     _listenToSocket();
 
-    await _readyCompleter!.future.timeout(
-      Duration(milliseconds: timeoutMs),
-    );
-    _readyCompleter = null;
+    final deadline = Duration(milliseconds: timeoutMs);
+    final elapsed = Stopwatch()..start();
+    Duration remaining() {
+      final left = deadline - elapsed.elapsed;
+      if (left <= Duration.zero) {
+        throw TimeoutException('MySQL connection timed out', deadline);
+      }
+      return left;
+    }
 
-    // set connection charset
-    if (setCharsetOnConnect) {
-      await execute(
-        'SET @@collation_connection=$_collation, @@character_set_client=utf8mb4, @@character_set_connection=utf8mb4, @@character_set_results=utf8mb4',
-      );
+    try {
+      await _readyCompleter!.future.timeout(remaining());
+      _readyCompleter = null;
+
+      // set connection charset
+      if (setCharsetOnConnect) {
+        await execute(
+          'SET @@collation_connection=$_collation, @@character_set_client=utf8mb4, @@character_set_connection=utf8mb4, @@character_set_results=utf8mb4',
+        ).timeout(remaining());
+      }
+    } catch (error) {
+      // Closes the transport even mid TLS handshake: a server that stopped
+      // answering kept the TCP connection open after the timeout.
+      _readyCompleter = null;
+      _lastError = error;
+      _forceClose();
+      rethrow;
     }
   }
 
@@ -720,19 +772,56 @@ class MySQLConnection {
           payloadLength: 0,
         );
 
-        _socket.add(responsePacket.encode());
+        final plain = _socket;
+        if (plain is! RawSocketAdapter) {
+          throw StateError('TLS needs the socket opened by createConnection');
+        }
+        plain.add(responsePacket.encode());
+        await plain.flush();
 
-        _socketSubscription?.pause();
+        // The server sends nothing more in plain text. The TLS upgrade takes
+        // the raw socket over; _socket stays the plain adapter until it
+        // completes, so a connect() timeout closes the transport.
+        await _socketSubscription?.cancel();
+        _socketSubscription = null;
+        final detached = plain.detachForUpgrade();
 
-        final secureSocket = await SecureSocket.secure(
-          _socket,
-          context: _securityContext, // novo parâmetro
-          onBadCertificate: _onBadCertificate ?? ((cert) => true),
-        );
+        var onBadCertificate = _onBadCertificate;
+        if (onBadCertificate == null &&
+            (!_verifyServerCertificate ||
+                plain.address.type == InternetAddressType.unix)) {
+          onBadCertificate = (_) => true;
+        }
+
+        final RawSecureSocket secureSocket;
+        try {
+          secureSocket = await RawSecureSocket.secure(
+            detached.socket,
+            subscription: detached.subscription,
+            host: _host,
+            context: _securityContext,
+            onBadCertificate: onBadCertificate,
+          );
+        } on HandshakeException catch (e) {
+          if (!'$e'.contains('CERTIFICATE_VERIFY_FAILED')) rethrow;
+          throw HandshakeException(
+            'The MySQL server certificate was rejected (${e.message}). Add '
+            'the CA that signed it to securityContext, or pass '
+            'verifyServerCertificate: false to accept any certificate '
+            '(a server in Docker or on the same host)',
+            e.osError,
+          );
+        }
+
+        if (_state == _MySQLConnectionState.closed) {
+          // connect() timed out while the handshake was finishing.
+          unawaited(secureSocket.close().then<void>((_) {}, onError: (_) {}));
+          return;
+        }
 
         // logger.d("SSL connection established");
         // switch socket
-        _socket = secureSocket;
+        _socket = SecureRawSocketAdapter(secureSocket);
         _listenToSocket();
       }
 
@@ -1546,17 +1635,21 @@ class MySQLConnection {
     if (_serverConnectionId == 0) return;
     MySQLConnection? killer;
     try {
+      // The host as given, not the resolved address: the certificate names
+      // the host.
       killer = await MySQLConnection.createConnection(
-        host: _socket.remoteAddress,
-        port: _socket.remotePort,
+        host: _host,
+        port: _port,
         userName: _username,
         password: _password,
         secure: _secure,
         collation: _collation,
         securityContext: _securityContext,
         onBadCertificate: _onBadCertificate,
+        verifyServerCertificate: _verifyServerCertificate,
         allowPublicKeyRetrieval: _allowPublicKeyRetrieval,
         serverPublicKey: _serverPublicKey,
+        socketTimeout: _socketTimeout,
       );
       await killer.connect();
       await killer.execute('KILL QUERY $_serverConnectionId');
