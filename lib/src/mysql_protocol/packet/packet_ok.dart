@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
 
@@ -40,10 +41,20 @@ class MySQLPacketOK extends MySQLPacketPayload {
   ///
   /// O método utiliza a função [getVariableEncInt] para decodificar os valores length-encoded.
   factory MySQLPacketOK.decode(Uint8List buffer) {
+    if (buffer.isEmpty) {
+      throw const MySQLProtocolException(
+        'Truncated MySQLPacketOK: empty buffer',
+      );
+    }
     int offset = 0;
 
-    // 1) Leitura do header (1 byte)
+    // 1) Leitura do header (1 byte; 0x00 or 0xfe when CLIENT_DEPRECATE_EOF is set)
     final header = buffer[offset];
+    if (header != 0x00 && header != 0xfe) {
+      throw MySQLProtocolException(
+        'Invalid MySQLPacketOK header: 0x${header.toRadixString(16)}',
+      );
+    }
     offset += 1;
 
     // 2) Leitura do número de linhas afetadas (length-encoded integer)

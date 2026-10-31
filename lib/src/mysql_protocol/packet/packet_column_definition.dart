@@ -1,6 +1,13 @@
+import 'dart:convert';
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
+
+(String, int) _readMetadataString(Uint8List buffer, int offset) {
+  final bytes = buffer.getLengthEncodedBytes(offset);
+  return (utf8.decode(bytes.$1, allowMalformed: true), bytes.$2);
+}
 
 /// Representa um pacote de definição de coluna (Column Definition Packet)
 /// no protocolo MySQL.
@@ -82,32 +89,46 @@ class MySQLColumnDefinitionPacket extends MySQLPacketPayload {
     int offset = 0;
 
     // 1) Lê catalog (length-encoded string)
-    final catalogLE = buffer.getUtf8LengthEncodedString(offset);
+    final catalogLE = _readMetadataString(buffer, offset);
     offset += catalogLE.$2;
 
     // 2) Lê schema (length-encoded string)
-    final schemaLE = buffer.getUtf8LengthEncodedString(offset);
+    final schemaLE = _readMetadataString(buffer, offset);
     offset += schemaLE.$2;
 
     // 3) Lê table (length-encoded string)
-    final tableLE = buffer.getUtf8LengthEncodedString(offset);
+    final tableLE = _readMetadataString(buffer, offset);
     offset += tableLE.$2;
 
     // 4) Lê org_table (length-encoded string)
-    final orgTableLE = buffer.getUtf8LengthEncodedString(offset);
+    final orgTableLE = _readMetadataString(buffer, offset);
     offset += orgTableLE.$2;
 
     // 5) Lê name (length-encoded string)
-    final nameLE = buffer.getUtf8LengthEncodedString(offset);
+    final nameLE = _readMetadataString(buffer, offset);
     offset += nameLE.$2;
 
     // 6) Lê org_name (length-encoded string)
-    final orgNameLE = buffer.getUtf8LengthEncodedString(offset);
+    final orgNameLE = _readMetadataString(buffer, offset);
     offset += orgNameLE.$2;
 
     // 7) Lê lengthOfFixedLengthFields (geralmente 0x0c)
     final lengthOfFixedLengthFields = buffer.getVariableEncIntAt(offset);
+    if (lengthOfFixedLengthFields.$1 < BigInt.from(0x0c)) {
+      throw MySQLProtocolException(
+        'Invalid fixed-fields length in MySQLColumnDefinitionPacket: '
+        '${lengthOfFixedLengthFields.$1}',
+      );
+    }
     offset += lengthOfFixedLengthFields.$2;
+
+    if (BigInt.from(buffer.length - offset) < lengthOfFixedLengthFields.$1) {
+      throw MySQLProtocolException(
+        'Truncated fixed-length fields in MySQLColumnDefinitionPacket: '
+        'declared ${lengthOfFixedLengthFields.$1} bytes, '
+        'available ${buffer.length - offset}',
+      );
+    }
 
     // 8) Lê charset (2 bytes, little-endian)
     final charset = byteData.getUint16(offset, Endian.little);

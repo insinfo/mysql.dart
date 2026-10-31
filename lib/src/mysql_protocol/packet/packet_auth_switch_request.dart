@@ -1,6 +1,7 @@
+import 'dart:convert';
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
-import 'package:mysql_dart/mysql_protocol_extension.dart';
 
 /// Representa o pacote "Auth Switch Request" do protocolo MySQL.
 ///
@@ -34,16 +35,36 @@ class MySQLPacketAuthSwitchRequest extends MySQLPacketPayload {
   /// 2. authPluginName: string terminada em null (utiliza [getUtf8NullTerminatedString]).
   /// 3. authPluginData: o restante do buffer.
   factory MySQLPacketAuthSwitchRequest.decode(Uint8List buffer) {
+    if (buffer.isEmpty) {
+      throw const MySQLProtocolException(
+        'Truncated MySQLPacketAuthSwitchRequest: empty buffer',
+      );
+    }
     final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
     // 1) Leitura do header (1 byte)
     final header = byteData.getUint8(offset);
+    if (header != 0xfe) {
+      throw MySQLProtocolException(
+        'Invalid MySQLPacketAuthSwitchRequest header: '
+        'expected 0xfe, got 0x${header.toRadixString(16)}',
+      );
+    }
     offset += 1;
 
     // 2) Leitura do nome do plugin de autenticação (string null-terminated)
-    final authPluginName = buffer.getUtf8NullTerminatedString(offset);
-    offset += authPluginName.$2;
+    final pluginEnd = buffer.indexOf(0, offset);
+    if (pluginEnd < 0) {
+      throw const MySQLProtocolException(
+        'Truncated MySQLPacketAuthSwitchRequest: unterminated authPluginName',
+      );
+    }
+    final authPluginName = utf8.decode(
+      Uint8List.sublistView(buffer, offset, pluginEnd),
+      allowMalformed: true,
+    );
+    offset = pluginEnd + 1;
 
     // 3) O restante do buffer corresponde aos dados do plugin
     final authPluginData = Uint8List.sublistView(buffer, offset);
@@ -51,7 +72,7 @@ class MySQLPacketAuthSwitchRequest extends MySQLPacketPayload {
     return MySQLPacketAuthSwitchRequest(
       header: header,
       authPluginData: authPluginData,
-      authPluginName: authPluginName.$1,
+      authPluginName: authPluginName,
     );
   }
 

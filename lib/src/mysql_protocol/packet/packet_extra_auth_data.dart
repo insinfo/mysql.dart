@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 
 /// Representa o pacote de dados extras de autenticação enviado pelo servidor.
@@ -30,11 +31,22 @@ class MySQLPacketExtraAuthData extends MySQLPacketPayload {
   /// 1. O primeiro byte é lido como o header.
   /// 2. O restante do buffer é lido como uma string UTF-8, que representa os dados do plugin.
   factory MySQLPacketExtraAuthData.decode(Uint8List buffer) {
+    if (buffer.isEmpty) {
+      throw const MySQLProtocolException(
+        'Truncated MySQLPacketExtraAuthData: empty buffer',
+      );
+    }
     final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
-    // Leitura do header (1 byte)
+    // Leitura do header (1 byte; AuthMoreData header is 0x01)
     final header = byteData.getUint8(offset);
+    if (header != 0x01) {
+      throw MySQLProtocolException(
+        'Invalid MySQLPacketExtraAuthData header: '
+        'expected 0x01, got 0x${header.toRadixString(16)}',
+      );
+    }
     offset += 1;
 
     final pluginData = Uint8List.sublistView(buffer, offset);
