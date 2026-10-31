@@ -68,15 +68,20 @@ class MySQLPacketHandshakeResponse41 extends MySQLPacketPayload {
     // Verifica se o desafio possui 20 bytes, conforme especificado.
     assert(challenge.length == 20);
 
-    // Converte a senha para bytes (UTF-8)
-    final passwordBytes = utf8.encode(password);
+    final Uint8List authData;
+    if (password.isEmpty) {
+      authData = Uint8List(0);
+    } else {
+      // Converte a senha para bytes (UTF-8)
+      final passwordBytes = utf8.encode(password);
 
-    // Calcula a resposta de autenticação:
-    // authResponse = xor(sha1(password), sha1(challenge + sha1(sha1(password))))
-    final authData = xor(
-      sha1(passwordBytes),
-      sha1([...challenge, ...sha1(sha1(passwordBytes))]),
-    );
+      // Calcula a resposta de autenticação:
+      // authResponse = xor(sha1(password), sha1(challenge + sha1(sha1(password))))
+      authData = xor(
+        sha1(passwordBytes),
+        sha1([...challenge, ...sha1(sha1(passwordBytes))]),
+      );
+    }
 
     return MySQLPacketHandshakeResponse41(
       capabilityFlags: _supportedCapabitilies,
@@ -111,15 +116,20 @@ class MySQLPacketHandshakeResponse41 extends MySQLPacketPayload {
     // Verifica se o desafio possui 20 bytes
     assert(challenge.length == 20);
 
-    // Converte a senha para bytes (UTF-8)
-    final passwordBytes = utf8.encode(password);
+    final Uint8List authData;
+    if (password.isEmpty) {
+      authData = Uint8List(0);
+    } else {
+      // Converte a senha para bytes (UTF-8)
+      final passwordBytes = utf8.encode(password);
 
-    // Calcula a resposta de autenticação utilizando SHA256:
-    // authResponse = xor(sha256(password), sha256(sha256(sha256(password)) + challenge))
-    final authData = xor(
-      sha256(passwordBytes),
-      sha256([...sha256(sha256(passwordBytes)), ...challenge]),
-    );
+      // Calcula a resposta de autenticação utilizando SHA256:
+      // authResponse = xor(sha256(password), sha256(sha256(sha256(password)) + challenge))
+      authData = xor(
+        sha256(passwordBytes),
+        sha256([...sha256(sha256(passwordBytes)), ...challenge]),
+      );
+    }
 
     return MySQLPacketHandshakeResponse41(
       capabilityFlags: _supportedCapabitilies,
