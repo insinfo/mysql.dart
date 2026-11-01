@@ -1,3 +1,20 @@
+## Unreleased
+
+- fix: `connect()` waited forever when the server answered the handshake with an `AuthSwitchRequest` for an authentication plugin the driver does not support; it now fails with `MySQLClientException` (#15, by Kevin Moore)
+- fix: an ERR followed by an OK in the same TCP read during the handshake marked the connection as established although the server had refused the login; the ERR now fails `connect()` and closes the connection. An auth challenge shorter than 20 bytes is rejected, and the TLS certificate is verified before any auth challenge is read (#15)
+- fix: an ERR among the parameter and column definitions of a `COM_STMT_PREPARE` reply was ignored and `prepare()` succeeded; it now fails with `MySQLServerException` (#15)
+- fix: a malformed RSA public key from the server (`caching_sha2_password` without TLS) is rejected with a `FormatException`: DER lengths must be minimal and inside the key, the structure must be an RSA SubjectPublicKeyInfo with no trailing bytes, and the modulus and exponent must be plausible. `writeVariableEncInt` rejects negative values and always writes little-endian, whatever the writer's default (#15)
+- fix: a truncated or malformed packet from the server (header, greeting, OK, EOF, column count, column definition, prepare OK, auth switch, extra auth data) threw `RangeError` or `FormatException`; it now throws `MySQLProtocolException`. A packet is decoded from its declared length only, so the bytes of the next packet in the same read are no longer taken as part of it (#13, by Kevin Moore)
+- fix: column names that are not UTF-8 (latin1 metadata sent before `SET NAMES`) threw a `FormatException`; they are decoded like the OK and ERR messages. A greeting whose authentication plugin name is not NUL-terminated (MySQL 5.5/5.6, Bug#59453) is accepted (#13)
+- fix: malformed rows, text and binary, threw `RangeError` or `IndexError`: a length-encoded header past the end of the row, an 8-byte length that overflowed a signed 64-bit shift, a binary DATE/DATETIME/TIMESTAMP that is not 0, 4, 7 or 11 bytes or a TIME that is not 0, 8 or 12. They now throw `MySQLProtocolException`; so does `typedColAt<T>()` for a `T` the value cannot convert to, which threw `TypeError` (#14, by Kevin Moore)
+- fix: `typedColAt<int>()` on a `BIGINT UNSIGNED` above 2^63 - 1 threw the `FormatException` of `int.parse` (through both protocols, with any server), and so did a numeric or date value not in the format of its column; they now throw `MySQLProtocolException`, as `typedColAt` documents. Read such a value as `String` or `num`, or with `typedAssoc()`, which returns a `BigInt`
+- fix: the message of an ERR packet was decoded as strict UTF-8. Errors sent before the handshake use the server's own charset (latin1 with a localized `lc_messages`), so a message with an accent threw `FormatException` instead of `MySQLServerException`
+- test: `fuzz_decoders_test.dart` mutates packets captured from MySQL 9.7, MySQL 5.7 and MariaDB 13 (`tool/capture_server_packets.dart`) and feeds them to every decoder, to the typed reads and to the RSA key parser; only a `MySQLException` may escape. It found the two fixes above
+- test: `protocol_faults_test.dart` replays captured exchanges through a local TCP server and breaks them at every packet (dropped connection, injected ERR/OK/EOF/empty packets, byte-by-byte or coalesced delivery): every call must end, with a result or a `MySQLException`, and an ERR must fail it. Against 4.0.0 it reports 85 problems, among them 3 hangs and 25 calls that succeeded despite an ERR; it reports none now
+- test: the auth, decoder and row bounds tests of #13, #14 and #15 (by Kevin Moore)
+- ci: MySQL 5.5 (without TLS), 5.6 and 5.7, and MySQL 8.4 and 9.7 on Windows. The JSON and fractional-second tests skip on servers without them
+- docs: why TLS fails with old servers (`UNSUPPORTED_PROTOCOL`): `dart:io` requires TLS 1.2, MySQL 5.5 and 5.6 before 5.6.46 speak TLS 1.0 only
+
 ## 4.0.0
 
 TLS server certificates are now verified (breaking). Reported by Brett Sutton.
