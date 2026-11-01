@@ -141,22 +141,31 @@ class MySQLColumnType {
     if (_matchesType<T, String>()) {
       return value as T;
     }
-    if (_matchesType<T, bool>() &&
-        _value == mysqlColumnTypeTiny &&
-        columnLength == 1) {
-      return (int.parse(value) > 0) as T;
-    }
-    if (_matchesType<T, int>() && _canConvertToInt()) {
-      return int.parse(value) as T;
-    }
-    if (_matchesType<T, double>() && _canConvertToNum()) {
-      return double.parse(value) as T;
-    }
-    if (_matchesType<T, num>() && _canConvertToNum()) {
-      return num.parse(value) as T;
-    }
-    if (_matchesType<T, DateTime>() && _canConvertToDateTime()) {
-      return tryParseMySqlDateTime(value) as T?;
+    try {
+      if (_matchesType<T, bool>() &&
+          _value == mysqlColumnTypeTiny &&
+          columnLength == 1) {
+        return (int.parse(value) > 0) as T;
+      }
+      if (_matchesType<T, int>() && _canConvertToInt()) {
+        return int.parse(value) as T;
+      }
+      if (_matchesType<T, double>() && _canConvertToNum()) {
+        return double.parse(value) as T;
+      }
+      if (_matchesType<T, num>() && _canConvertToNum()) {
+        return num.parse(value) as T;
+      }
+      if (_matchesType<T, DateTime>() && _canConvertToDateTime()) {
+        return tryParseMySqlDateTime(value) as T?;
+      }
+    } on FormatException catch (e) {
+      // A BIGINT UNSIGNED above 2^63-1 read as int, or a value that is not
+      // in the format its column type implies.
+      throw MySQLProtocolException(
+        'Cannot convert MySQL type $_value value to requested type $T: '
+        '${e.message}',
+      );
     }
 
     throw MySQLProtocolException(

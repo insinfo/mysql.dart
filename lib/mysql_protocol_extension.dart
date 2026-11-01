@@ -91,7 +91,9 @@ extension MySQLUint8ListExtension on Uint8List {
       _truncated('a string');
     }
     final tmp = Uint8List.sublistView(this, startOffset);
-    return utf8.decode(tmp);
+    // Errors sent before the handshake use the server's own charset (latin1
+    // with a localized lc_messages), so the message may not be UTF-8.
+    return utf8.decode(tmp, allowMalformed: true);
   }
 
   /// Lê uma string UTF-8 length‑encoded a partir de [startOffset].
