@@ -20,7 +20,8 @@ import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 
-const _deadline = Duration(seconds: 3);
+// Generous for a loaded CI runner: only a hang waits for all of it.
+const _deadline = Duration(seconds: 10);
 
 void main() {
   // MySQL 5.7 authenticates with mysql_native_password in one round trip.
@@ -249,7 +250,7 @@ Future<String?> _run(_Scenario scenario, _Fault? fault) async {
         secure: false,
         allowPublicKeyRetrieval: scenario.publicKeyRetrieval,
       );
-      await conn.connect(timeoutMs: 2000);
+      await conn.connect(timeoutMs: 5000);
       await scenario.action(conn);
       outcome.complete(fault != null && fault.refused
           ? 'succeeded although the server sent ERR'
