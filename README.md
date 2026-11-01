@@ -443,6 +443,11 @@ server; for a longer run set `FUZZ_ITERATIONS` (default 200) and `FUZZ_SEED`:
 FUZZ_ITERATIONS=20000 FUZZ_SEED=2 dart test test/fuzz_decoders_test.dart
 ```
 
+`test/protocol_faults_test.dart` replays the same captures through a local
+TCP server and breaks each exchange at every packet (dropped connection,
+injected ERR/OK/EOF/empty packets, byte-by-byte or coalesced delivery); every
+call must end with a result or a `MySQLException`, never hang.
+
 The pool test that restarts the database server runs only when
 `MYSQL_RESTART_COMMAND` is set to a command that restarts it (run by
 PowerShell on Windows, `sh` elsewhere), for example `docker restart mysql`:
