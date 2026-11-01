@@ -351,7 +351,9 @@ class MySQLConnection {
   }
 
   Uint8List _buildCachingSha2Seed(Uint8List part1, Uint8List? part2) {
-    final secondPart = part2 == null ? <int>[] : part2.sublist(0, 12);
+    final secondPart = part2 == null
+        ? const <int>[]
+        : (part2.length >= 12 ? Uint8List.sublistView(part2, 0, 12) : part2);
     return Uint8List.fromList([...part1, ...secondPart]);
   }
 
@@ -368,25 +370,25 @@ class MySQLConnection {
     _socketSubscription = _socket.listen(
       (data) {
         for (final chunk in _splitPackets(data)) {
-          unawaited(
-            _processSocketData(chunk).catchError((Object error, StackTrace st) {
-              _lastError = error;
-              _failConnectionEstablishedWaiters(error, st);
-            }),
-          );
+          if (_state == _MySQLConnectionState.closed) {
+            break;
+          }
+          _processSocketData(chunk);
         }
       },
       onDone: _handleSocketClose,
-      onError: (Object error, StackTrace st) {
-        _lastError = error;
-        _failConnectionEstablishedWaiters(error, st);
-        _abortPendingCommand(error, st);
-        if (_connected) {
-          // The socket is unusable after an error.
-          _forceClose();
-        }
-      },
+      onError: _handleSocketProtocolError,
     );
+  }
+
+  void _handleSocketProtocolError(Object error, StackTrace st) {
+    _lastError = error;
+    _failConnectionEstablishedWaiters(error, st);
+    _abortPendingCommand(error, st);
+    if (_state != _MySQLConnectionState.closed) {
+      // The socket is unusable after an error.
+      _forceClose();
+    }
   }
 
   void _abortPendingCommand(Object error, [StackTrace? stackTrace]) {
@@ -461,7 +463,7 @@ class MySQLConnection {
     _connectionEstablishedWaiters.clear();
   }
 
-  Future<void> _handleCachingSha2AuthMoreData(MySQLPacket packet) async {
+  void _handleCachingSha2AuthMoreData(MySQLPacket packet) {
     final payload = packet.payload as MySQLPacketExtraAuthData;
     final pluginData = payload.pluginData;
 
@@ -554,113 +556,120 @@ class MySQLConnection {
     );
   }
 
-  Future<void> _processSocketData(Uint8List data) async {
+  void _processSocketData(Uint8List data) {
+    if (_state == _MySQLConnectionState.closed) {
+      return;
+    }
+    try {
+      final pending = _dispatchSocketPacket(data);
+      if (pending != null) {
+        unawaited(pending.catchError(_handleSocketProtocolError));
+      }
+    } catch (error, st) {
+      _handleSocketProtocolError(error, st);
+    }
+  }
+
+  Future<void>? _dispatchSocketPacket(Uint8List data) {
     // logger.d("Processing socket data. Current state is $_state");
     // logger.v(data);
     if (_state == _MySQLConnectionState.closed) {
       // don't process any data if state is closed
-      return;
+      return null;
+    }
+
+    if (data.length <= 4) {
+      throw const MySQLProtocolException(
+        'Received empty MySQL packet payload',
+      );
     }
 
     if (_state == _MySQLConnectionState.waitInitialHandshake) {
-      await _processInitialHandshake(data);
-      return;
+      return _processInitialHandshake(data);
     }
 
     if (_state == _MySQLConnectionState.initialHandshakeResponseSend) {
-      // check for auth switch request
-      try {
-        final authSwitchPacket =
-            MySQLPacket.decodeAuthSwitchRequestPacket(data);
-
-        final payload =
-            authSwitchPacket.payload as MySQLPacketAuthSwitchRequest;
-        // logger.d("Processing AuthSwitchRequestPacket");
-        _activeAuthPluginName = payload.authPluginName;
-        _authSeed = payload.authPluginData.length >= 20
-            ? Uint8List.sublistView(payload.authPluginData, 0, 20)
-            : Uint8List.fromList(payload.authPluginData);
-
-        switch (payload.authPluginName) {
-          case 'mysql_native_password':
-            final responsePayload =
-                MySQLPacketAuthSwitchResponse.createWithNativePassword(
-              password: _password,
-              challenge: payload.authPluginData.sublist(0, 20),
-            );
-            final responsePacket = MySQLPacket(
-              sequenceID: authSwitchPacket.sequenceID + 1,
-              payload: responsePayload,
-              payloadLength: 0,
-            );
-
-            _socket.add(responsePacket.encode());
-            return;
-          case 'caching_sha2_password':
-            final responsePayload =
-                MySQLPacketAuthSwitchResponse.createWithCachingSha2Password(
-              password: _password,
-              challenge: payload.authPluginData.sublist(0, 20),
-            );
-            final responsePacket = MySQLPacket(
-              sequenceID: authSwitchPacket.sequenceID + 1,
-              payload: responsePayload,
-              payloadLength: 0,
-            );
-
-            _socket.add(responsePacket.encode());
-            return;
-          default:
-            throw MySQLClientException(
-                "Unsupported auth plugin name: ${payload.authPluginName}");
-        }
-      } catch (e) {
-        // not auth switch request packet, continue packet processing
-      }
-
-      MySQLPacket packet;
-
-      try {
-        packet = MySQLPacket.decodeGenericPacket(data);
-      } catch (e) {
-        // logger.e("Skipping invalid packet: $data");
-        rethrow;
-      }
-
-      if (packet.payload is MySQLPacketExtraAuthData) {
-        assert(_activeAuthPluginName != null);
-
-        if (_activeAuthPluginName != 'caching_sha2_password') {
-          throw MySQLClientException(
-              "Unexpected auth plugin name $_activeAuthPluginName, while receiving MySQLPacketExtraAuthData packet");
-        }
-
-        await _handleCachingSha2AuthMoreData(packet);
-        return;
-      }
-
-      if (packet.isErrorPacket()) {
-        final errorPayload = packet.payload as MySQLPacketError;
-        throw MySQLServerException(
-            errorPayload.errorMessage, errorPayload.errorCode);
-      }
-
-      if (packet.isOkPacket()) {
-        // logger.i("Got OK packet. Connection established");
-        _markConnectionEstablished();
-      }
-
-      return;
+      _handleInitialHandshakeResponse(data);
+      return null;
     }
 
     if (_state == _MySQLConnectionState.waitingCommandResponse) {
-      _processCommandResponse(data);
-      return;
+      return _processCommandResponse(data);
     }
 
     throw MySQLClientException(
       "Skipping socket data, because of connection bad state\nState: ${_state.name}\nData: $data",
     );
+  }
+
+  void _handleInitialHandshakeResponse(Uint8List data) {
+    if (data[4] == 0xfe) {
+      _handleAuthSwitchRequest(MySQLPacket.decodeAuthSwitchRequestPacket(data));
+      return;
+    }
+
+    final packet = MySQLPacket.decodeGenericPacket(data);
+    if (packet.payload is MySQLPacketExtraAuthData) {
+      if (_activeAuthPluginName != 'caching_sha2_password') {
+        throw MySQLClientException(
+          "Unexpected auth plugin name $_activeAuthPluginName, while receiving MySQLPacketExtraAuthData packet",
+        );
+      }
+      _handleCachingSha2AuthMoreData(packet);
+      return;
+    }
+
+    if (packet.isErrorPacket()) {
+      final errorPayload = packet.payload as MySQLPacketError;
+      throw MySQLServerException(
+        errorPayload.errorMessage,
+        errorPayload.errorCode,
+      );
+    }
+
+    if (packet.isOkPacket()) {
+      _markConnectionEstablished();
+      return;
+    }
+
+    throw const MySQLProtocolException(
+      'Unexpected packet received during authentication handshake',
+    );
+  }
+
+  void _handleAuthSwitchRequest(MySQLPacket authSwitchPacket) {
+    final payload = authSwitchPacket.payload as MySQLPacketAuthSwitchRequest;
+    if (payload.authPluginName != 'mysql_native_password' &&
+        payload.authPluginName != 'caching_sha2_password') {
+      throw MySQLClientException(
+        'Unsupported auth plugin name: ${payload.authPluginName}',
+      );
+    }
+    if (payload.authPluginData.length < 20) {
+      throw const MySQLProtocolException(
+        'Auth switch challenge must be at least 20 bytes',
+      );
+    }
+    final challenge = Uint8List.sublistView(payload.authPluginData, 0, 20);
+    _activeAuthPluginName = payload.authPluginName;
+    _authSeed = Uint8List.fromList(challenge);
+
+    final responsePayload = payload.authPluginName == 'mysql_native_password'
+        ? MySQLPacketAuthSwitchResponse.createWithNativePassword(
+            password: _password,
+            challenge: challenge,
+          )
+        : MySQLPacketAuthSwitchResponse.createWithCachingSha2Password(
+            password: _password,
+            challenge: challenge,
+          );
+    final responsePacket = MySQLPacket(
+      sequenceID: authSwitchPacket.sequenceID + 1,
+      payload: responsePayload,
+      payloadLength: 0,
+    );
+
+    _socket.add(responsePacket.encode());
   }
 
   Iterable<Uint8List> _splitPackets(Uint8List data) sync* {
@@ -680,6 +689,7 @@ class MySQLConnection {
       buffer = chunks.takeBytes();
       _pendingChunks = null;
       _pendingPacketBytes = null;
+      _pendingPacketLength = 0;
     }
 
     var offset = 0;
@@ -728,7 +738,7 @@ class MySQLConnection {
     }
   }
 
-  Future<void> _processInitialHandshake(Uint8List data) async {
+  Future<void>? _processInitialHandshake(Uint8List data) {
     // logger.d("Processing initial handshake");
     // First packet can be error packet
     if (MySQLPacket.detectPacketType(data) == MySQLGenericPacketType.error) {
@@ -758,131 +768,129 @@ class MySQLConnection {
     }
 
     if (_secure) {
-      // it secure = true, initiate ssl connection
-      Future<void> initiateSSL() async {
-        // logger.d("Initiating SSL connection");
-        final responsePayload = MySQLPacketSSLRequest.createDefault(
-          initialHandshakePayload: payload,
-          connectWithDB: _databaseName != null,
-        );
-
-        final responsePacket = MySQLPacket(
-          sequenceID: 1,
-          payload: responsePayload,
-          payloadLength: 0,
-        );
-
-        final plain = _socket;
-        if (plain is! RawSocketAdapter) {
-          throw StateError('TLS needs the socket opened by createConnection');
-        }
-        plain.add(responsePacket.encode());
-        await plain.flush();
-
-        // The server sends nothing more in plain text. The TLS upgrade takes
-        // the raw socket over; _socket stays the plain adapter until it
-        // completes, so a connect() timeout closes the transport.
-        await _socketSubscription?.cancel();
-        _socketSubscription = null;
-        final detached = plain.detachForUpgrade();
-
-        var onBadCertificate = _onBadCertificate;
-        if (onBadCertificate == null &&
-            (!_verifyServerCertificate ||
-                plain.address.type == InternetAddressType.unix)) {
-          onBadCertificate = (_) => true;
-        }
-
-        final RawSecureSocket secureSocket;
-        try {
-          secureSocket = await RawSecureSocket.secure(
-            detached.socket,
-            subscription: detached.subscription,
-            host: _host,
-            context: _securityContext,
-            onBadCertificate: onBadCertificate,
-          );
-        } on HandshakeException catch (e) {
-          if (!'$e'.contains('CERTIFICATE_VERIFY_FAILED')) rethrow;
-          throw HandshakeException(
-            'The MySQL server certificate was rejected (${e.message}). Add '
-            'the CA that signed it to securityContext, or pass '
-            'verifyServerCertificate: false to accept any certificate '
-            '(a server in Docker or on the same host)',
-            e.osError,
-          );
-        }
-
-        if (_state == _MySQLConnectionState.closed) {
-          // connect() timed out while the handshake was finishing.
-          unawaited(secureSocket.close().then<void>((_) {}, onError: (_) {}));
-          return;
-        }
-
-        // logger.d("SSL connection established");
-        // switch socket
-        _socket = SecureRawSocketAdapter(secureSocket);
-        _listenToSocket();
-      }
-
-      await initiateSSL();
+      return _initiateSslAndSendHandshakeResponse(payload);
     }
 
-    final authPluginName = payload.authPluginName;
-    // logger.d("Auth plugin name is: ${payload.authPluginName}");
-    _activeAuthPluginName = authPluginName;
-    // logger.d("Auth plugin name is: $authPluginName");
-    switch (authPluginName) {
-      case 'mysql_native_password':
-        final responsePayload =
-            MySQLPacketHandshakeResponse41.createWithNativePassword(
-          username: _username,
-          password: _password,
-          initialHandshakePayload: payload,
-        );
-
-        responsePayload.database = _databaseName;
-
-        final responsePacket = MySQLPacket(
-          payload: responsePayload,
-          sequenceID: _secure ? 2 : 1,
-          payloadLength: 0,
-        );
-
-        _state = _MySQLConnectionState.initialHandshakeResponseSend;
-        _socket.add(responsePacket.encode());
-        // logger.d("Native password response send");
-        break;
-      case 'caching_sha2_password':
-        final responsePayload =
-            MySQLPacketHandshakeResponse41.createWithCachingSha2Password(
-          username: _username,
-          password: _password,
-          initialHandshakePayload: payload,
-        );
-
-        responsePayload.database = _databaseName;
-
-        final responsePacket = MySQLPacket(
-          payload: responsePayload,
-          sequenceID: _secure ? 2 : 1,
-          payloadLength: 0,
-        );
-
-        _state = _MySQLConnectionState.initialHandshakeResponseSend;
-        _socket.add(responsePacket.encode());
-        // logger.d("Caching sha2 password response send");
-        break;
-      default:
-        throw MySQLClientException(
-            "Unsupported auth plugin name: $authPluginName");
-    }
+    _sendInitialHandshakeResponse(payload);
+    return null;
   }
 
-  void _processCommandResponse(Uint8List data) {
-    // logger.d("Processing command response packet");
-    assert(_responseCallback != null);
-    _responseCallback!(data);
+  Future<void> _initiateSslAndSendHandshakeResponse(
+    MySQLPacketInitialHandshake payload,
+  ) async {
+    final responsePayload = MySQLPacketSSLRequest.createDefault(
+      initialHandshakePayload: payload,
+      connectWithDB: _databaseName != null,
+    );
+
+    final responsePacket = MySQLPacket(
+      sequenceID: 1,
+      payload: responsePayload,
+      payloadLength: 0,
+    );
+
+    final plain = _socket;
+    if (plain is! RawSocketAdapter) {
+      throw StateError('TLS needs the socket opened by createConnection');
+    }
+    plain.add(responsePacket.encode());
+    await plain.flush();
+
+    // The server sends nothing more in plain text. The TLS upgrade takes
+    // the raw socket over; _socket stays the plain adapter until it
+    // completes, so a connect() timeout closes the transport.
+    await _socketSubscription?.cancel();
+    _socketSubscription = null;
+    final detached = plain.detachForUpgrade();
+
+    var onBadCertificate = _onBadCertificate;
+    if (onBadCertificate == null &&
+        (!_verifyServerCertificate ||
+            plain.address.type == InternetAddressType.unix)) {
+      onBadCertificate = (_) => true;
+    }
+
+    final RawSecureSocket secureSocket;
+    try {
+      secureSocket = await RawSecureSocket.secure(
+        detached.socket,
+        subscription: detached.subscription,
+        host: _host,
+        context: _securityContext,
+        onBadCertificate: onBadCertificate,
+      );
+    } on HandshakeException catch (e) {
+      if (!'$e'.contains('CERTIFICATE_VERIFY_FAILED')) rethrow;
+      throw HandshakeException(
+        'The MySQL server certificate was rejected (${e.message}). Add '
+        'the CA that signed it to securityContext, or pass '
+        'verifyServerCertificate: false to accept any certificate '
+        '(a server in Docker or on the same host)',
+        e.osError,
+      );
+    }
+
+    if (_state == _MySQLConnectionState.closed) {
+      // connect() timed out while the handshake was finishing.
+      unawaited(secureSocket.close().then<void>((_) {}, onError: (_) {}));
+      return;
+    }
+
+    _socket = SecureRawSocketAdapter(secureSocket);
+    _listenToSocket();
+    _sendInitialHandshakeResponse(payload);
+  }
+
+  void _sendInitialHandshakeResponse(MySQLPacketInitialHandshake payload) {
+    final authPluginName = payload.authPluginName;
+    if (authPluginName == null ||
+        (authPluginName != 'mysql_native_password' &&
+            authPluginName != 'caching_sha2_password')) {
+      throw MySQLClientException(
+        "Unsupported auth plugin name: $authPluginName",
+      );
+    }
+    if (payload.authPluginDataPart1.length != 8 ||
+        payload.authPluginDataPart2 == null ||
+        payload.authPluginDataPart2!.length < 12) {
+      throw const MySQLProtocolException(
+        'Initial handshake auth scramble must be at least 20 bytes',
+      );
+    }
+
+    _activeAuthPluginName = authPluginName;
+    final responsePayload = authPluginName == 'mysql_native_password'
+        ? MySQLPacketHandshakeResponse41.createWithNativePassword(
+            username: _username,
+            password: _password,
+            initialHandshakePayload: payload,
+          )
+        : MySQLPacketHandshakeResponse41.createWithCachingSha2Password(
+            username: _username,
+            password: _password,
+            initialHandshakePayload: payload,
+          );
+
+    responsePayload.database = _databaseName;
+
+    final responsePacket = MySQLPacket(
+      payload: responsePayload,
+      sequenceID: _secure ? 2 : 1,
+      payloadLength: 0,
+    );
+
+    _state = _MySQLConnectionState.initialHandshakeResponseSend;
+    _socket.add(responsePacket.encode());
+  }
+
+  Future<void> _processCommandResponse(Uint8List data) {
+    final callback = _responseCallback;
+    if (callback == null) {
+      throw MySQLClientException(
+        'Received command response with no active callback',
+      );
+    }
+    return callback(data);
   }
 
   /// Executes a SQL [query].
@@ -1075,6 +1083,25 @@ class MySQLConnection {
             packet = MySQLPacket.decodeGenericPacket(data);
             if (packet.isEOFPacket()) {
               state = 3;
+            } else if (packet.isErrorPacket()) {
+              final errorPayload = packet.payload as MySQLPacketError;
+              _markConnectionEstablished();
+              fail(
+                MySQLServerException(
+                  errorPayload.errorMessage,
+                  errorPayload.errorCode,
+                ),
+              );
+              return;
+            } else {
+              fail(
+                const MySQLProtocolException(
+                  'Unexpected packet while waiting for column-definition EOF',
+                ),
+                StackTrace.current,
+              );
+              _forceClose();
+              return;
             }
             break;
           case 3:
@@ -1460,6 +1487,12 @@ class MySQLConnection {
     }
 
     if (params is Map) {
+      if (params.keys.any((key) => key is! String)) {
+        throw MySQLClientException(
+          "Unsupported params key type in ${params.runtimeType}. Use Map<String, Object?> "
+          "for named params.",
+        );
+      }
       final mapParams = params.cast<String, Object?>();
 
       if (mapParams.isEmpty) {
@@ -1710,6 +1743,7 @@ class MySQLConnection {
      */
     int state = 0;
     int numOfEofPacketsParsed = 0;
+    int defsInCurrentBlock = 0;
     MySQLPacketStmtPrepareOK? preparedPacket;
 
     ++_commandSerial;
@@ -1727,14 +1761,33 @@ class MySQLConnection {
             break;
           default:
             packet = null;
+            final expectedDefs =
+                (preparedPacket!.numOfParams > 0 && numOfEofPacketsParsed == 0)
+                    ? preparedPacket!.numOfParams
+                    : preparedPacket!.numOfCols;
 
-            if (MySQLPacket.detectPacketType(data) ==
-                MySQLGenericPacketType.eof) {
+            final packetType = MySQLPacket.detectPacketType(data);
+            if (packetType == MySQLGenericPacketType.error) {
+              final errorPacket = MySQLPacket.decodeGenericPacket(data);
+              final error = errorPacket.payload as MySQLPacketError;
+              _markConnectionEstablished();
+              completer.completeError(
+                MySQLServerException(error.errorMessage, error.errorCode),
+              );
+              return;
+            }
+
+            if (packetType == MySQLGenericPacketType.eof) {
+              MySQLPacket.decodeGenericPacket(data);
+              if (defsInCurrentBlock != expectedDefs) {
+                throw const MySQLProtocolException(
+                  'Unexpected EOF before all COM_STMT_PREPARE definitions arrived',
+                );
+              }
+              defsInCurrentBlock = 0;
               numOfEofPacketsParsed++;
 
               var done = false;
-
-              assert(preparedPacket != null);
 
               if (preparedPacket!.numOfCols > 0 &&
                   preparedPacket!.numOfParams > 0) {
@@ -1760,6 +1813,14 @@ class MySQLConnection {
 
                 return;
               }
+            } else {
+              if (defsInCurrentBlock >= expectedDefs) {
+                throw const MySQLProtocolException(
+                  'Missing EOF after COM_STMT_PREPARE definition packets',
+                );
+              }
+              MySQLPacket.decodeColumnDefPacket(data);
+              defsInCurrentBlock++;
             }
 
             break;
@@ -2132,8 +2193,16 @@ class MySQLConnection {
   /// become JSON text (for JSON columns), BigInt its decimal text.
   static Object? _normalizeParam(Object? value) {
     if (value is Uint8List) return value;
-    if (value is Map || value is List) return jsonEncode(value);
-    if (value is Set) return jsonEncode(value.toList());
+    if (value is Map || value is List || value is Set) {
+      try {
+        return jsonEncode(value is Set ? value.toList() : value);
+      } on JsonUnsupportedObjectError catch (e) {
+        throw MySQLClientException(
+          'Unsupported parameter value for JSON encoding: '
+          '${e.unsupportedObject.runtimeType}',
+        );
+      }
+    }
     if (value is BigInt) return value.toString();
     return value;
   }
@@ -2279,6 +2348,9 @@ class MySQLConnection {
     _socket.destroy();
 
     _pendingPacketBytes = null;
+    _pendingChunks = null;
+    _pendingPacketLength = 0;
+    _largePacket = null;
 
     _connected = false;
     _state = _MySQLConnectionState.closed;
@@ -2289,7 +2361,6 @@ class MySQLConnection {
 
     _onCloseCallbacks.clear();
     _responseCallback = null;
-    _pendingPacketBytes = null;
     _lastError = null;
     _autoPreparedStmtCache.clear();
     _deferredStmtCloseIds.clear();
@@ -2302,6 +2373,9 @@ class MySQLConnection {
 
     _socket.destroy();
     _pendingPacketBytes = null;
+    _pendingChunks = null;
+    _pendingPacketLength = 0;
+    _largePacket = null;
 
     _connected = false;
     _state = _MySQLConnectionState.closed;
@@ -2317,7 +2391,6 @@ class MySQLConnection {
 
     _onCloseCallbacks.clear();
     _responseCallback = null;
-    _pendingPacketBytes = null;
     _lastError = null;
     _autoPreparedStmtCache.clear();
     _deferredStmtCloseIds.clear();
@@ -2638,7 +2711,7 @@ class ResultSetRow {
 
   /// Get column data by column index (starting form 0)
   dynamic colAt(int colIndex) {
-    if (colIndex >= _values.length) {
+    if (colIndex < 0 || colIndex >= _values.length) {
       throw MySQLClientException("Column index is out of range");
     }
 
@@ -2655,6 +2728,9 @@ class ResultSetRow {
   /// Throws [MySQLClientException] if conversion is not possible
   T? typedColAt<T>(int colIndex) {
     final value = colAt(colIndex);
+    if (colIndex >= _metadata.columns.length) {
+      throw MySQLClientException("Column index is out of range");
+    }
     final colDef = _metadata.columns[colIndex];
 
     final typed = colDef.type

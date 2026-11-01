@@ -13,7 +13,9 @@ Never _truncated(String what) =>
 extension MySQLUint8ListExtension on Uint8List {
   @pragma('vm:prefer-inline')
   (BigInt, int) getVariableEncIntAt(int startOffset) {
-    if (startOffset >= length) _truncated('a length-encoded integer');
+    if (startOffset < 0 || startOffset >= length) {
+      _truncated('a length-encoded integer');
+    }
     final firstByte = this[startOffset];
 
     if (firstByte < 0xfb) {
@@ -21,13 +23,13 @@ extension MySQLUint8ListExtension on Uint8List {
     }
 
     if (firstByte == 0xfc) {
-      if (startOffset + 3 > length) _truncated('a length-encoded integer');
+      if (startOffset > length - 3) _truncated('a length-encoded integer');
       final value = this[startOffset + 1] | (this[startOffset + 2] << 8);
       return (BigInt.from(value), 3);
     }
 
     if (firstByte == 0xfd) {
-      if (startOffset + 4 > length) _truncated('a length-encoded integer');
+      if (startOffset > length - 4) _truncated('a length-encoded integer');
       final value = this[startOffset + 1] |
           (this[startOffset + 2] << 8) |
           (this[startOffset + 3] << 16);
@@ -35,7 +37,7 @@ extension MySQLUint8ListExtension on Uint8List {
     }
 
     if (firstByte == 0xfe) {
-      if (startOffset + 9 > length) _truncated('a length-encoded integer');
+      if (startOffset > length - 9) _truncated('a length-encoded integer');
       final low = this[startOffset + 1] |
           (this[startOffset + 2] << 8) |
           (this[startOffset + 3] << 16) |
@@ -64,6 +66,9 @@ extension MySQLUint8ListExtension on Uint8List {
   ///
   /// No protocolo MySQL, algumas strings são terminadas em byte 0x00 para sinalizar fim.
   (String, int) getUtf8NullTerminatedString(int startOffset) {
+    if (startOffset < 0 || startOffset > length) {
+      _truncated('a null-terminated string');
+    }
     var endOffset = startOffset;
     while (endOffset < length && this[endOffset] != 0) {
       endOffset++;
@@ -82,6 +87,9 @@ extension MySQLUint8ListExtension on Uint8List {
   /// Em algumas situações (por exemplo, mensagens de erro ou final de buffer),
   /// o protocolo envia o restante dos dados como texto até o EOF (End Of File).
   String getUtf8StringEOF(int startOffset) {
+    if (startOffset < 0 || startOffset > length) {
+      _truncated('a string');
+    }
     final tmp = Uint8List.sublistView(this, startOffset);
     return utf8.decode(tmp);
   }
@@ -155,7 +163,9 @@ extension MySQLByteDataExtension on ByteData {
   /// - $1: valor lido como [BigInt].
   /// - $2: número total de bytes consumidos (1 para o header, +2/+3/+8, dependendo do caso).
   (BigInt, int) getVariableEncInt(int startOffset) {
-    if (startOffset >= lengthInBytes) _truncated('a length-encoded integer');
+    if (startOffset < 0 || startOffset >= lengthInBytes) {
+      _truncated('a length-encoded integer');
+    }
     final firstByte = getUint8(startOffset);
 
     if (firstByte < 0xfb) {
@@ -164,14 +174,14 @@ extension MySQLByteDataExtension on ByteData {
     }
 
     if (firstByte == 0xfc) {
-      if (startOffset + 3 > lengthInBytes) {
+      if (startOffset > lengthInBytes - 3) {
         _truncated('a length-encoded integer');
       }
       return (BigInt.from(getUint16(startOffset + 1, Endian.little)), 3);
     }
 
     if (firstByte == 0xfd) {
-      if (startOffset + 4 > lengthInBytes) {
+      if (startOffset > lengthInBytes - 4) {
         _truncated('a length-encoded integer');
       }
       final value = getUint16(startOffset + 1, Endian.little) |
@@ -180,7 +190,7 @@ extension MySQLByteDataExtension on ByteData {
     }
 
     if (firstByte == 0xfe) {
-      if (startOffset + 9 > lengthInBytes) {
+      if (startOffset > lengthInBytes - 9) {
         _truncated('a length-encoded integer');
       }
       final low = getUint32(startOffset + 1, Endian.little);
@@ -195,7 +205,9 @@ extension MySQLByteDataExtension on ByteData {
 
   /// Lê um inteiro de 2 bytes (little-endian) a partir de [startOffset].
   int getInt2(int startOffset) {
-    if (startOffset + 2 > lengthInBytes) _truncated('an int<2>');
+    if (startOffset < 0 || startOffset > lengthInBytes - 2) {
+      _truncated('an int<2>');
+    }
     return getUint8(startOffset) | (getUint8(startOffset + 1) << 8);
   }
 
@@ -204,7 +216,9 @@ extension MySQLByteDataExtension on ByteData {
   /// Esse formato (3 bytes) ocorre em algumas partes do protocolo
   /// que usam "int<3>" para valores como comprimentos ou contagens menores que 16M.
   int getInt3(int startOffset) {
-    if (startOffset + 3 > lengthInBytes) _truncated('an int<3>');
+    if (startOffset < 0 || startOffset > lengthInBytes - 3) {
+      _truncated('an int<3>');
+    }
     return getUint8(startOffset) |
         (getUint8(startOffset + 1) << 8) |
         (getUint8(startOffset + 2) << 16);
@@ -221,23 +235,27 @@ extension MySQLByteWriterExtension on ByteDataWriter {
   /// - Se [value] estiver entre 65536 e 16777215, escreve o marcador 0xfd seguido de 3 bytes.
   /// - Se [value] for maior ou igual a 16777216, escreve o marcador 0xfe seguido de 8 bytes.
   void writeVariableEncInt(int value) {
+    if (value < 0) {
+      throw MySQLProtocolException(
+        'Cannot encode negative length-encoded integer: $value',
+      );
+    }
     if (value < 251) {
-      // Valor de 1 byte.
+      // 1-byte unsigned value.
       writeUint8(value);
-    } else if (value >= 251 && value < 65536) {
-      // 0xfc + 2 bytes.
+    } else if (value < 65536) {
+      // 0xfc + 2-byte little-endian unsigned integer.
       writeUint8(0xfc);
-      writeInt16(value);
-    } else if (value >= 65536 && value < 16777216) {
-      // 0xfd + 3 bytes.
+      writeUint16(value, Endian.little);
+    } else if (value < 16777216) {
+      // 0xfd + 3-byte little-endian unsigned integer.
       writeUint8(0xfd);
-      final bd = ByteData(4);
-      bd.setInt32(0, value, Endian.little);
-      write(bd.buffer.asUint8List().sublist(0, 3));
-    } else if (value >= 16777216) {
-      // 0xfe + 8 bytes.
+      writeUint16(value & 0xffff, Endian.little);
+      writeUint8((value >> 16) & 0xff);
+    } else {
+      // 0xfe + 8-byte little-endian unsigned integer.
       writeUint8(0xfe);
-      writeInt64(value);
+      writeUint64(value, Endian.little);
     }
   }
 }
