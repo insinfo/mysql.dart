@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 
 const int mysqlBinaryCollationId = 63;
@@ -109,4 +111,104 @@ int _daysInMonth(int year, int month) {
     return leap ? 29 : 28;
   }
   return const [31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+/// Reads a MySQL length-encoded byte slice starting at [offset] within
+/// `buffer[0..limit)`.
+///
+/// When [allowNullMarker] is `true` (textual result rows), a `0xfb` header
+/// returns `bytes: null` and advances by 1 byte. When `false` (binary
+/// length-encoded columns, where NULLs are carried in the row NULL-bitmap),
+/// `0xfb` throws [MySQLProtocolException].
+({Uint8List? bytes, int nextOffset}) readLengthEncodedSlice(
+  Uint8List buffer,
+  int offset,
+  int limit, {
+  required bool allowNullMarker,
+}) {
+  if (limit < 0 || limit > buffer.length || offset < 0 || offset >= limit) {
+    throw const MySQLProtocolException(
+      'Truncated packet while reading length-encoded field',
+    );
+  }
+
+  final first = buffer[offset];
+  if (first == 0xfb) {
+    if (!allowNullMarker) {
+      throw const MySQLProtocolException(
+        'Invalid 0xfb NULL marker in binary length-encoded field',
+      );
+    }
+    return (bytes: null, nextOffset: offset + 1);
+  }
+
+  final (headerLength, valueLength) = _readNonNullLengthHeader(
+    buffer,
+    offset,
+    limit,
+    first,
+  );
+  final valueStart = offset + headerLength;
+  if (valueLength > limit - valueStart) {
+    throw const MySQLProtocolException(
+      'Length-encoded field exceeds packet bounds',
+    );
+  }
+  final valueEnd = valueStart + valueLength;
+  return (
+    bytes: Uint8List.sublistView(buffer, valueStart, valueEnd),
+    nextOffset: valueEnd,
+  );
+}
+
+(int, int) _readNonNullLengthHeader(
+  Uint8List buffer,
+  int offset,
+  int limit,
+  int first,
+) {
+  if (first < 0xfb) {
+    return (1, first);
+  }
+  final remaining = limit - offset;
+  switch (first) {
+    case 0xfc when remaining >= 3:
+      return (3, buffer[offset + 1] | (buffer[offset + 2] << 8));
+    case 0xfd when remaining >= 4:
+      final length = buffer[offset + 1] |
+          (buffer[offset + 2] << 8) |
+          (buffer[offset + 3] << 16);
+      return (4, length);
+    case 0xfe when remaining >= 9:
+      return (9, _readUint64Length(buffer, offset + 1, remaining - 9));
+    case 0xff:
+      throw const MySQLProtocolException(
+        'Invalid 0xff header byte in length-encoded field',
+      );
+    default:
+      throw const MySQLProtocolException(
+        'Truncated length-encoded integer header',
+      );
+  }
+}
+
+int _readUint64Length(Uint8List buffer, int offset, int maxRemaining) {
+  final low = (buffer[offset] |
+          (buffer[offset + 1] << 8) |
+          (buffer[offset + 2] << 16)) +
+      buffer[offset + 3] * 0x1000000;
+  final high = (buffer[offset + 4] |
+          (buffer[offset + 5] << 8) |
+          (buffer[offset + 6] << 16)) +
+      buffer[offset + 7] * 0x1000000;
+  if (high == 0) {
+    return low;
+  }
+  final full = (BigInt.from(high) << 32) | BigInt.from(low);
+  if (full > BigInt.from(maxRemaining)) {
+    throw const MySQLProtocolException(
+      'Length-encoded field exceeds packet bounds',
+    );
+  }
+  return full.toInt();
 }

@@ -31,6 +31,7 @@ class MySQLPacketResultSet extends MySQLPacketPayload {
   /// para decodificação dos dados enviados pelo servidor.
   @override
   Uint8List encode() {
-    throw UnimplementedError("Encode não implementado para MySQLPacketResultSet");
+    throw UnimplementedError(
+        "Encode não implementado para MySQLPacketResultSet");
   }
 }
