@@ -1,4 +1,4 @@
-## Unreleased
+## 4.0.1
 
 - fix: `connect()` waited forever when the server answered the handshake with an `AuthSwitchRequest` for an authentication plugin the driver does not support; it now fails with `MySQLClientException` (#15, by Kevin Moore)
 - fix: an ERR followed by an OK in the same TCP read during the handshake marked the connection as established although the server had refused the login; the ERR now fails `connect()` and closes the connection. An auth challenge shorter than 20 bytes is rejected, and the TLS certificate is verified before any auth challenge is read (#15)
