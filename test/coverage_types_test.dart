@@ -274,6 +274,10 @@ void main() {
     });
 
     test('datetime(6) keeps microseconds through both protocols', () async {
+      if (!await serverHasFractionalSeconds(conn)) {
+        markTestSkipped('the server has no fractional seconds');
+        return;
+      }
       final reads = await roundTrip('datetime(6)', literals: [
         "'2024-01-02 03:04:05.000001'",
         "'2024-01-02 03:04:05.005'",
@@ -308,6 +312,10 @@ void main() {
     });
 
     test('datetime(3), datetime and timestamp(3)', () async {
+      if (!await serverHasFractionalSeconds(conn)) {
+        markTestSkipped('the server has no fractional seconds');
+        return;
+      }
       final ms = await roundTrip('datetime(3)',
           literals: ["'2024-01-02 03:04:05.120'"],
           params: [DateTime(2024, 1, 2, 3, 4, 5, 120)]);
@@ -340,6 +348,10 @@ void main() {
     });
 
     test('time(6), negative and above 24 hours', () async {
+      if (!await serverHasFractionalSeconds(conn)) {
+        markTestSkipped('the server has no fractional seconds');
+        return;
+      }
       final reads = await roundTrip('time(6)', literals: [
         "'838:59:59'",
         "'-838:59:59'",
@@ -377,6 +389,10 @@ void main() {
     });
 
     test('zero dates', () async {
+      if (!await serverHasFractionalSeconds(conn)) {
+        markTestSkipped('the server has no fractional seconds');
+        return;
+      }
       final date = await roundTrip('date', literals: ["'0000-00-00'"]);
       expect(date.single.textRaw, '0000-00-00');
       expect(date.single.binaryRaw, '0000-00-00 00:00:00');

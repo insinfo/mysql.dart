@@ -105,9 +105,14 @@ jobs:
       fail-fast: false
       matrix:
         sdk: [3.6.0]
-        mysql-version: ['5.6', '5.7', '9', '9.7']
+        mysql-version: ['5.5', '5.6', '5.7', '9', '9.7']
         include:
           # 5.x defaults to latin1 and a 4 MB packet; the suite expects utf8mb4 and 64 MB.
+          # The 5.5 image is Oracle's generic build (yaSSL, TLS 1.0 only) and
+          # dart:io requires TLS 1.2, so 5.5 runs without TLS.
+          - mysql-version: '5.5'
+            server-args: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-allowed-packet=64M
+            secure: 'false'
           - mysql-version: '5.6'
             server-args: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-allowed-packet=64M
           - mysql-version: '5.7'
@@ -122,7 +127,7 @@ jobs:
 
       # Started here rather than as a service: the server needs the
       # certificates generated above, signed by the CA the tests trust.
-      - name: Start MySQL ${{ matrix.mysql-version }} with TLS
+      - name: Start MySQL ${{ matrix.mysql-version }}
         run: |
           chmod 644 certs/*.pem
           docker run -d --name mysql -p 3307:3306 \
@@ -132,9 +137,7 @@ jobs:
             -e MYSQL_PASSWORD=dart \
             -v "$PWD/certs:/etc/mysql/certs:ro" \
             mysql:${{ matrix.mysql-version }} \
-            --ssl-ca=/etc/mysql/certs/ca-cert.pem \
-            --ssl-cert=/etc/mysql/certs/server-cert.pem \
-            --ssl-key=/etc/mysql/certs/server-key.pem \
+            ${{ matrix.secure != 'false' && '--ssl-ca=/etc/mysql/certs/ca-cert.pem --ssl-cert=/etc/mysql/certs/server-cert.pem --ssl-key=/etc/mysql/certs/server-key.pem' || '' }} \
             ${{ matrix.server-args }}
           # The entrypoint's first start skips TCP; this waits for the real one.
           for i in $(seq 1 90); do
@@ -162,7 +165,7 @@ jobs:
           MYSQL_USER: dart
           MYSQL_PASSWORD: dart
           MYSQL_DATABASE: banco_teste
-          MYSQL_SECURE: "true"
+          MYSQL_SECURE: ${{ matrix.secure || 'true' }}
           MYSQL_CA_CERT: certs/ca-cert.pem
         run: dart run test --concurrency 1 --chain-stack-traces --platform vm
 
@@ -175,7 +178,7 @@ jobs:
           MYSQL_USER: dart
           MYSQL_PASSWORD: dart
           MYSQL_DATABASE: banco_teste
-          MYSQL_SECURE: "true"
+          MYSQL_SECURE: ${{ matrix.secure || 'true' }}
           MYSQL_CA_CERT: certs/ca-cert.pem
           MYSQL_RESTART_COMMAND: docker restart mysql
         run: dart run test test/pool_test.dart --plain-name "recupera após reinício real" --chain-stack-traces --platform vm

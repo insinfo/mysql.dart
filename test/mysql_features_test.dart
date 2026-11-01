@@ -332,6 +332,10 @@ void main() {
 
   test('Prepared statements: DateTime milliseconds encoded correctly',
       () async {
+    if (!await serverHasFractionalSeconds(connection)) {
+      markTestSkipped('the server has no fractional seconds');
+      return;
+    }
     await connection.execute("DROP TABLE IF EXISTS datetime_millis_test");
     await connection.execute(
         "CREATE TABLE datetime_millis_test (id INT AUTO_INCREMENT PRIMARY KEY, ts DATETIME(6))");
