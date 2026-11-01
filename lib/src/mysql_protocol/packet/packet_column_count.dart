@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/mysql_protocol_extension.dart';
 
@@ -26,6 +27,11 @@ class MySQLPacketColumnCount extends MySQLPacketPayload {
   /// A função [getVariableEncInt] é utilizada para extrair esse valor a partir do início do buffer.
   factory MySQLPacketColumnCount.decode(Uint8List buffer) {
     final columnCount = buffer.getVariableEncIntAt(0);
+    if (columnCount.$1 < BigInt.one) {
+      throw MySQLProtocolException(
+        'Invalid column count in MySQLPacketColumnCount: ${columnCount.$1}',
+      );
+    }
 
     return MySQLPacketColumnCount(
       columnCount: columnCount.$1,

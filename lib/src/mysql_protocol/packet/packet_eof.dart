@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 
 /// Representa um pacote EOF (End-Of-File) do protocolo MySQL.
@@ -30,11 +31,21 @@ class MySQLPacketEOF extends MySQLPacketPayload {
   /// 2. Warnings count: 2 bytes (valor ignorado).
   /// 3. Status flags: 2 bytes (little-endian).
   factory MySQLPacketEOF.decode(Uint8List buffer) {
+    if (buffer.length < 5 || buffer.length >= 9) {
+      throw MySQLProtocolException(
+        'Invalid MySQLPacketEOF length: expected 5..8 bytes, got ${buffer.length}',
+      );
+    }
     final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
     // Leitura do header (1 byte).
     final header = byteData.getUint8(offset);
+    if (header != 0xfe) {
+      throw MySQLProtocolException(
+        'Invalid MySQLPacketEOF header: expected 0xfe, got 0x${header.toRadixString(16)}',
+      );
+    }
     offset += 1;
 
     // Pula os 2 bytes referentes ao count de warnings (normalmente não utilizados).

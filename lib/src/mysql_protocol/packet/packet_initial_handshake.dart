@@ -1,7 +1,8 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
-import 'package:mysql_dart/mysql_protocol_extension.dart';
 
 /// Representa o pacote de handshake inicial enviado pelo servidor MySQL.
 ///
@@ -74,16 +75,46 @@ class MySQLPacketInitialHandshake extends MySQLPacketPayload {
   /// 11. **Auth Plugin Data Part 2:** Número variável de bytes, se a flag mysqlCapFlagClientSecureConnection estiver ativa.
   /// 12. **Auth Plugin Name:** String terminada em null, se a flag mysqlCapFlagClientPluginAuth estiver ativa.
   factory MySQLPacketInitialHandshake.decode(Uint8List buffer) {
+    if (buffer.isEmpty) {
+      throw const MySQLProtocolException(
+        'Truncated MySQLPacketInitialHandshake: empty buffer',
+      );
+    }
     final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
-    // 1) Protocol Version (1 byte)
+    // 1) Protocol Version (1 byte; HandshakeV10 uses 0x0a)
     final protocolVersion = byteData.getUint8(offset);
+    if (protocolVersion != 10) {
+      throw MySQLProtocolException(
+        'Unsupported MySQL handshake protocol version: $protocolVersion',
+      );
+    }
     offset += 1;
 
     // 2) Server Version: String terminada em null
-    final serverVersion = buffer.getUtf8NullTerminatedString(offset);
-    offset += serverVersion.$2;
+    final serverVersionEnd = buffer.indexOf(0, offset);
+    if (serverVersionEnd < 0) {
+      throw const MySQLProtocolException(
+        'Truncated MySQLPacketInitialHandshake: unterminated serverVersion',
+      );
+    }
+    final serverVersion = utf8.decode(
+      Uint8List.sublistView(buffer, offset, serverVersionEnd),
+      allowMalformed: true,
+    );
+    offset = serverVersionEnd + 1;
+
+    // Fixed fields after serverVersion require 31 bytes:
+    // connectionID (4) + authPluginDataPart1 (8) + filler (1) +
+    // capabilityFlags lower (2) + charset (1) + statusFlags (2) +
+    // capabilityFlags upper (2) + authPluginDataLength (1) + reserved (10).
+    if (buffer.length - offset < 31) {
+      throw MySQLProtocolException(
+        'Truncated MySQLPacketInitialHandshake: expected at least '
+        '${offset + 31} bytes, got ${buffer.length}',
+      );
+    }
 
     // 3) Connection ID (4 bytes, little-endian)
     final connectionID = byteData.getUint32(offset, Endian.little);
@@ -132,6 +163,12 @@ class MySQLPacketInitialHandshake extends MySQLPacketPayload {
     if (capabilityFlags & mysqlCapFlagClientSecureConnection != 0) {
       // O comprimento é o máximo entre 13 e (authPluginDataLength - 8)
       int length = max(13, authPluginDataLength - 8);
+      if (buffer.length - offset < length) {
+        throw MySQLProtocolException(
+          'Truncated MySQLPacketInitialHandshake: insufficient bytes for '
+          'authPluginDataPart2 (needed $length, available ${buffer.length - offset})',
+        );
+      }
       authPluginDataPart2 =
           Uint8List.sublistView(buffer, offset, offset + length);
       offset += length;
@@ -140,12 +177,22 @@ class MySQLPacketInitialHandshake extends MySQLPacketPayload {
     // 12) Auth Plugin Name (se aplicável)
     String? authPluginName;
     if (capabilityFlags & mysqlCapFlagClientPluginAuth != 0) {
-      authPluginName = buffer.getUtf8NullTerminatedString(offset).$1;
+      if (offset >= buffer.length) {
+        throw const MySQLProtocolException(
+          'Truncated MySQLPacketInitialHandshake: missing authPluginName',
+        );
+      }
+      final pluginEnd = buffer.indexOf(0, offset);
+      final endOffset = pluginEnd >= 0 ? pluginEnd : buffer.length;
+      authPluginName = utf8.decode(
+        Uint8List.sublistView(buffer, offset, endOffset),
+        allowMalformed: true,
+      );
     }
 
     return MySQLPacketInitialHandshake(
       protocolVersion: protocolVersion,
-      serverVersion: serverVersion.$1,
+      serverVersion: serverVersion,
       connectionID: connectionID,
       authPluginDataPart1: authPluginDataPart1,
       authPluginDataPart2: authPluginDataPart2,

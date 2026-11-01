@@ -110,11 +110,23 @@ class MySQLPacket {
   /// e soma 4 (bytes do cabeçalho).
   @pragma('vm:prefer-inline')
   static int getPacketLength(Uint8List buffer, [int offset = 0]) {
+    if (offset < 0 || offset > buffer.length - 4) {
+      throw MySQLProtocolException(
+        'Truncated MySQL packet header at offset $offset '
+        '(buffer length ${buffer.length})',
+      );
+    }
     return getPayloadLength(buffer, offset) + 4;
   }
 
   @pragma('vm:prefer-inline')
   static int getPayloadLength(Uint8List buffer, [int offset = 0]) {
+    if (offset < 0 || offset > buffer.length - 3) {
+      throw MySQLProtocolException(
+        'Truncated MySQL packet header: cannot read payload length at offset '
+        '$offset (buffer length ${buffer.length})',
+      );
+    }
     return buffer[offset] |
         (buffer[offset + 1] << 8) |
         (buffer[offset + 2] << 16);
@@ -122,12 +134,42 @@ class MySQLPacket {
 
   @pragma('vm:prefer-inline')
   static int getSequenceId(Uint8List buffer, [int offset = 0]) {
+    if (offset < 0 || offset > buffer.length - 4) {
+      throw MySQLProtocolException(
+        'Truncated MySQL packet header: cannot read sequence ID at offset '
+        '$offset (buffer length ${buffer.length})',
+      );
+    }
     return buffer[offset + 3];
   }
 
   /// Decodifica o cabeçalho do pacote, retornando (payloadLength, sequenceID).
   static (int, int) decodePacketHeader(Uint8List buffer) {
     return (getPayloadLength(buffer), getSequenceId(buffer));
+  }
+
+  static Uint8List _extractPayload(
+    Uint8List buffer,
+    int declaredPayloadLength, {
+    bool allowEmpty = false,
+  }) {
+    final available = buffer.length - 4;
+    if (available < declaredPayloadLength) {
+      throw MySQLProtocolException(
+        'Truncated MySQL packet: header declares $declaredPayloadLength bytes, '
+        'but only $available available',
+      );
+    }
+    // Multi-packet payloads (>= 0xffffff bytes) are reassembled under the
+    // first 4-byte header, so preserve all reassembled trailing bytes.
+    final end = declaredPayloadLength == mysqlMaxPacketPayloadLength
+        ? buffer.length
+        : 4 + declaredPayloadLength;
+    final payload = Uint8List.sublistView(buffer, 4, end);
+    if (!allowEmpty && payload.isEmpty) {
+      throw MySQLProtocolException('Truncated MySQL packet: empty payload');
+    }
+    return payload;
   }
 
   /// Detecta o tipo genérico do pacote com base no primeiro byte do payload.
@@ -138,8 +180,13 @@ class MySQLPacket {
   /// - 0xff -> Error,
   /// - Caso contrário -> other.
   static MySQLGenericPacketType detectPacketType(Uint8List buffer) {
-    final payloadLength = getPayloadLength(buffer);
-    final type = buffer[4];
+    final header = decodePacketHeader(buffer);
+    final payload = _extractPayload(buffer, header.$1, allowEmpty: true);
+    if (payload.isEmpty) {
+      return MySQLGenericPacketType.other;
+    }
+    final payloadLength = payload.length;
+    final type = payload[0];
     if (type == 0x00 && payloadLength >= 7) {
       return MySQLGenericPacketType.ok;
     } else if (type == 0xfe && payloadLength < 9) {
@@ -154,35 +201,30 @@ class MySQLPacket {
   /// Decodifica um pacote de handshake inicial [MySQLPacketInitialHandshake].
   factory MySQLPacket.decodeInitialHandshake(Uint8List buffer) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
-    final payload = MySQLPacketInitialHandshake.decode(
-      Uint8List.sublistView(buffer, offset),
-    );
+    final payloadBytes = _extractPayload(buffer, header.$1);
+    final payload = MySQLPacketInitialHandshake.decode(payloadBytes);
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }
 
   /// Decodifica um pacote Auth Switch Request [MySQLPacketAuthSwitchRequest].
   factory MySQLPacket.decodeAuthSwitchRequestPacket(Uint8List buffer) {
-    final byteData = ByteData.sublistView(buffer);
     final header = decodePacketHeader(buffer);
-    final offset = 4;
-    final type = byteData.getUint8(offset);
+    final payloadBytes = _extractPayload(buffer, header.$1);
+    final type = payloadBytes[0];
 
     if (type != 0xfe) {
       throw MySQLProtocolException(
           "Cannot decode AuthSwitchResponse packet: type is not 0xfe");
     }
 
-    final payload = MySQLPacketAuthSwitchRequest.decode(
-      Uint8List.sublistView(buffer, offset),
-    );
+    final payload = MySQLPacketAuthSwitchRequest.decode(payloadBytes);
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }
@@ -190,31 +232,25 @@ class MySQLPacket {
   /// Decodifica um pacote genérico, podendo ser OK, EOF, ERROR, etc.
   factory MySQLPacket.decodeGenericPacket(Uint8List buffer) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
-    final byteData = ByteData.sublistView(buffer);
-    final payloadLength = header.$1;
-    final type = byteData.getUint8(offset);
+    final payloadBytes = _extractPayload(buffer, header.$1);
+    final payloadLength = payloadBytes.length;
+    final type = payloadBytes[0];
 
     late MySQLPacketPayload payload;
     if (type == 0x00 && payloadLength >= 7) {
-      payload = MySQLPacketOK.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketOK.decode(payloadBytes);
     } else if (type == 0xfe && payloadLength < 9) {
-      payload = MySQLPacketEOF.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketEOF.decode(payloadBytes);
     } else if (type == 0xff) {
-      payload = MySQLPacketError.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketError.decode(payloadBytes);
     } else if (type == 0x01) {
       // Extra Auth Data
-      payload = MySQLPacketExtraAuthData.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketExtraAuthData.decode(payloadBytes);
     } else {
-      throw MySQLProtocolException("Unsupported generic packet: $buffer");
+      throw MySQLProtocolException(
+        'Unsupported generic packet type 0x${type.toRadixString(16)} '
+        '(payload length $payloadLength)',
+      );
     }
 
     return MySQLPacket(
@@ -227,32 +263,31 @@ class MySQLPacket {
   /// Decodifica um pacote que contém a contagem de colunas [MySQLPacketColumnCount].
   factory MySQLPacket.decodeColumnCountPacket(Uint8List buffer) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
-    final byteData = ByteData.sublistView(buffer);
-    final type = byteData.getUint8(offset);
+    final payloadBytes = _extractPayload(buffer, header.$1);
+    final type = payloadBytes[0];
     late MySQLPacketPayload payload;
 
     if (type == 0x00) {
-      payload = MySQLPacketOK.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      if (payloadBytes.length < 7) {
+        throw MySQLProtocolException(
+          'Truncated MySQLPacketOK in COM_QUERY response: '
+          'expected at least 7 bytes, got ${payloadBytes.length}',
+        );
+      }
+      payload = MySQLPacketOK.decode(payloadBytes);
     } else if (type == 0xff) {
-      payload = MySQLPacketError.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketError.decode(payloadBytes);
     } else if (type == 0xfb) {
       throw MySQLProtocolException(
         "COM_QUERY_RESPONSE of type 0xfb is not implemented",
       );
     } else {
-      payload = MySQLPacketColumnCount.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketColumnCount.decode(payloadBytes);
     }
 
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }
@@ -260,13 +295,11 @@ class MySQLPacket {
   /// Decodifica um pacote de definição de coluna [MySQLColumnDefinitionPacket].
   factory MySQLPacket.decodeColumnDefPacket(Uint8List buffer) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
-    final payload = MySQLColumnDefinitionPacket.decode(
-      Uint8List.sublistView(buffer, offset),
-    );
+    final payloadBytes = _extractPayload(buffer, header.$1);
+    final payload = MySQLColumnDefinitionPacket.decode(payloadBytes);
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }
@@ -276,15 +309,19 @@ class MySQLPacket {
       Uint8List buffer, List<MySQLColumnDefinitionPacket> colDefs,
       {List<bool>? binaryColumns}) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
+    final payloadBytes = _extractPayload(
+      buffer,
+      header.$1,
+      allowEmpty: true,
+    );
     final payload = MySQLResultSetRowPacket.decode(
-      Uint8List.sublistView(buffer, offset),
+      payloadBytes,
       colDefs,
       binaryColumns: binaryColumns,
     );
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }
@@ -294,15 +331,19 @@ class MySQLPacket {
       Uint8List buffer, List<MySQLColumnDefinitionPacket> colDefs,
       {List<bool>? textualColumns}) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
+    final payloadBytes = _extractPayload(
+      buffer,
+      header.$1,
+      allowEmpty: true,
+    );
     final payload = MySQLBinaryResultSetRowPacket.decode(
-      Uint8List.sublistView(buffer, offset),
+      payloadBytes,
       colDefs,
       textualColumns: textualColumns,
     );
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }
@@ -310,19 +351,14 @@ class MySQLPacket {
   /// Decodifica a resposta ao COM_STMT_PREPARE [MySQLPacketStmtPrepareOK] ou error.
   factory MySQLPacket.decodeCommPrepareStmtResponsePacket(Uint8List buffer) {
     final header = decodePacketHeader(buffer);
-    final offset = 4;
-    final byteData = ByteData.sublistView(buffer);
-    final type = byteData.getUint8(offset);
+    final payloadBytes = _extractPayload(buffer, header.$1);
+    final type = payloadBytes[0];
 
     late MySQLPacketPayload payload;
     if (type == 0x00) {
-      payload = MySQLPacketStmtPrepareOK.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketStmtPrepareOK.decode(payloadBytes);
     } else if (type == 0xff) {
-      payload = MySQLPacketError.decode(
-        Uint8List.sublistView(buffer, offset),
-      );
+      payload = MySQLPacketError.decode(payloadBytes);
     } else {
       throw MySQLProtocolException(
         "Unexpected header type while decoding COM_STMT_PREPARE response: $header",
@@ -331,7 +367,7 @@ class MySQLPacket {
 
     return MySQLPacket(
       sequenceID: header.$2,
-      payloadLength: header.$1,
+      payloadLength: payloadBytes.length,
       payload: payload,
     );
   }

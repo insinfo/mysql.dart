@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 
 /// Representa o pacote de resposta ao comando COM_STMT_PREPARE (Prepare Statement OK)
@@ -48,11 +49,23 @@ class MySQLPacketStmtPrepareOK extends MySQLPacketPayload {
   /// 5. **Filler:** 1 byte (valor ignorado).
   /// 6. **Number of warnings:** 2 bytes (little-endian).
   factory MySQLPacketStmtPrepareOK.decode(Uint8List buffer) {
+    if (buffer.length < 12) {
+      throw MySQLProtocolException(
+        'Truncated MySQLPacketStmtPrepareOK: expected at least 12 bytes, '
+        'got ${buffer.length}',
+      );
+    }
     final byteData = ByteData.sublistView(buffer);
     int offset = 0;
 
-    // 1) Leitura do header (1 byte)
+    // 1) Leitura do header (1 byte; COM_STMT_PREPARE_OK status is 0x00)
     final header = byteData.getUint8(offset);
+    if (header != 0x00) {
+      throw MySQLProtocolException(
+        'Invalid MySQLPacketStmtPrepareOK header: '
+        'expected 0x00, got 0x${header.toRadixString(16)}',
+      );
+    }
     offset += 1;
 
     // 2) Leitura do Statement ID (4 bytes, little-endian)
@@ -85,6 +98,7 @@ class MySQLPacketStmtPrepareOK extends MySQLPacketPayload {
 
   @override
   Uint8List encode() {
-    throw UnimplementedError("Encode não implementado para MySQLPacketStmtPrepareOK");
+    throw UnimplementedError(
+        "Encode não implementado para MySQLPacketStmtPrepareOK");
   }
 }
