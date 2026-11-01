@@ -8,6 +8,12 @@
 //
 // FUZZ_ITERATIONS (default 200) sets the mutations per seed and target and
 // FUZZ_SEED the random sequence; a finding prints the input that caused it.
+//
+// A few seconds on an idle machine; the timeout leaves room for a slow CI
+// runner and matches the deadline of each target's isolate.
+@Timeout(Duration(minutes: 5))
+library;
+
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
