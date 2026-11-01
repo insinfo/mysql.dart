@@ -15,10 +15,13 @@ See [example](example/) directory for examples and usage
 Tested in CI:
  * MariaDB 10.11
  * MariaDB 11.8
+ * MySQL Community Server 5.6 and 5.7
  * MySQL Community Server 9
  * MySQL Community Server 9.7
+ * MySQL Community Server 8.4 and 9.7 on Windows
 
 Also verified outside CI:
+ * MySQL Community Server 5.5 (without TLS, see below)
  * MySQL Percona Server 5.7 and 8
  * MariaDB 10.x
  * MariaDB 11.7.2
@@ -217,6 +220,23 @@ application and the server (same host, a Docker network). Across a network it
 lets anyone in the path impersonate the server and read the password. A
 `onBadCertificate` callback, when given, decides instead of the flag.
 `MySQLConnectionPool` takes the same options.
+
+#### TLS with old servers: `UNSUPPORTED_PROTOCOL`
+
+Dart's TLS stack (BoringSSL) only negotiates TLS 1.2 and 1.3. MySQL Community
+5.5 and 5.6 before 5.6.46 (built with yaSSL) only speak TLS 1.0 and 1.1, so a
+secure connection to them fails during the handshake with:
+
+```
+HandshakeException: Handshake error in client (OS Error:
+	UNSUPPORTED_PROTOCOL(handshake_client.cc:...))
+```
+
+It is not a certificate problem and no driver option can fix it. Upgrade the
+server (MySQL 5.6.46+, 5.7.28+ and every 8.x/9.x support TLS 1.2:
+`SHOW GLOBAL VARIABLES LIKE 'tls_version'` lists `TLSv1.2`; servers too old
+for it may not have the variable at all), or connect with `secure: false`
+only where the network is trusted (see Network exposure above).
 
 `socketTimeout` bounds the TCP connection attempt; `connect(timeoutMs: ...)`
 bounds the greeting, TLS handshake and authentication, and closes the
