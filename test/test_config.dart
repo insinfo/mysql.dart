@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:mysql_dart/mysql_dart.dart';
+
 String get mysqlTestHost => Platform.environment['MYSQL_HOST'] ?? 'localhost';
 
 int get mysqlTestPort =>
@@ -34,6 +36,17 @@ String? get mysqlTestCaCert => Platform.environment['MYSQL_CA_CERT'];
 
 String? get mysqlRestartCommand =>
     Platform.environment['MYSQL_RESTART_COMMAND'];
+
+/// MySQL has a JSON type from 5.7 on; MariaDB maps JSON to LONGTEXT.
+Future<bool> serverHasJsonType(MySQLConnection conn) async {
+  final result = await conn.execute('SELECT VERSION() AS v');
+  final version = result.rows.first.colByName('v')!;
+  if (version.contains('MariaDB')) return true;
+  final parts = version.split(RegExp(r'[.-]'));
+  final major = int.parse(parts[0]);
+  final minor = int.parse(parts[1]);
+  return major > 5 || (major == 5 && minor >= 7);
+}
 
 bool _parseBool(String? value, {required bool defaultValue}) {
   if (value == null || value.isEmpty) {
