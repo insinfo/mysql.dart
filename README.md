@@ -434,6 +434,15 @@ TLS, set `MYSQL_CA_CERT` to the CA that signed the server certificate, which
 must name `MYSQL_HOST`; `.github/scripts/generate-test-certs.sh` creates such a
 CA and certificate.
 
+`test/fuzz_decoders_test.dart` feeds the packet decoders mutations of real
+server packets (`test/fixtures`, captured by `tool/capture_server_packets.dart`)
+and fails if anything other than a `MySQLException` escapes. It needs no
+server; for a longer run set `FUZZ_ITERATIONS` (default 200) and `FUZZ_SEED`:
+
+```bash
+FUZZ_ITERATIONS=20000 FUZZ_SEED=2 dart test test/fuzz_decoders_test.dart
+```
+
 The pool test that restarts the database server runs only when
 `MYSQL_RESTART_COMMAND` is set to a command that restarts it (run by
 PowerShell on Windows, `sh` elsewhere), for example `docker restart mysql`:
