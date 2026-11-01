@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/src/utils/hex.dart';
@@ -55,7 +56,8 @@ void main() {
       expect(error.errorMessage, "Table 'x' doesn't exist");
     });
 
-    test("an error packet without SQLSTATE (before the handshake) keeps "
+    test(
+        "an error packet without SQLSTATE (before the handshake) keeps "
         "the whole message", () {
       final error = MySQLPacketError.decode(Uint8List.fromList([
         0xff, 0x10, 0x04, // 1040
@@ -64,6 +66,18 @@ void main() {
       expect(error.errorCode, 1040);
       // The 6 bytes skipped for the SQLSTATE cut "Too ma" before.
       expect(error.errorMessage, "Too many connections");
+    });
+
+    test(
+        "an error packet in latin1 (lc_messages before the handshake) "
+        "still decodes", () {
+      final error = MySQLPacketError.decode(Uint8List.fromList([
+        0xff, 0x6a, 0x04, // 1130
+        ...latin1.encode("Host 'x' não tem permissão"),
+      ]));
+      expect(error.errorCode, 1130);
+      expect(error.errorMessage, startsWith("Host 'x' n"));
+      expect(error.errorMessage, endsWith("o tem permiss\u{fffd}o"));
     });
   });
 

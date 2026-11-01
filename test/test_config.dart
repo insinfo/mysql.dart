@@ -38,14 +38,27 @@ String? get mysqlRestartCommand =>
     Platform.environment['MYSQL_RESTART_COMMAND'];
 
 /// MySQL has a JSON type from 5.7 on; MariaDB maps JSON to LONGTEXT.
-Future<bool> serverHasJsonType(MySQLConnection conn) async {
+Future<bool> serverHasJsonType(MySQLConnection conn) =>
+    _mysqlAtLeast(conn, [5, 7]);
+
+/// DATETIME(6) and TIME(6) keep fractions of a second from MySQL 5.6.4 on.
+Future<bool> serverHasFractionalSeconds(MySQLConnection conn) =>
+    _mysqlAtLeast(conn, [5, 6, 4]);
+
+/// True on MariaDB (10+ has both features) or MySQL [minimum] and later.
+Future<bool> _mysqlAtLeast(MySQLConnection conn, List<int> minimum) async {
   final result = await conn.execute('SELECT VERSION() AS v');
   final version = result.rows.first.colByName('v')!;
   if (version.contains('MariaDB')) return true;
-  final parts = version.split(RegExp(r'[.-]'));
-  final major = int.parse(parts[0]);
-  final minor = int.parse(parts[1]);
-  return major > 5 || (major == 5 && minor >= 7);
+  final parts = version
+      .split(RegExp(r'[.-]'))
+      .take(minimum.length)
+      .map(int.parse)
+      .toList();
+  for (var i = 0; i < minimum.length; i++) {
+    if (parts[i] != minimum[i]) return parts[i] > minimum[i];
+  }
+  return true;
 }
 
 bool _parseBool(String? value, {required bool defaultValue}) {

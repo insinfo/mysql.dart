@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_protocol.dart';
 import 'package:mysql_dart/src/mysql_protocol/column_utils.dart';
 import 'package:test/test.dart';
@@ -571,6 +572,33 @@ void main() {
       });
     },
   );
+
+  test(
+      "a BIGINT UNSIGNED above 2^63-1 read as int throws a "
+      "MySQLProtocolException", () {
+    final sqlType = MySQLColumnType.create(mysqlColumnTypeLongLong);
+    expect(
+      () =>
+          sqlType.convertStringValueToProvidedType<int>('18446744073709551615'),
+      throwsA(isA<MySQLProtocolException>()),
+    );
+    expect(
+      sqlType.convertStringValueToProvidedType<String>('18446744073709551615'),
+      '18446744073709551615',
+    );
+    expect(
+      sqlType.convertStringValueToProvidedType<num>('18446744073709551615'),
+      18446744073709551615.0,
+    );
+  });
+
+  test("an invalid date read as DateTime throws a MySQLProtocolException", () {
+    final sqlType = MySQLColumnType.create(mysqlColumnTypeDateTime);
+    expect(
+      () => sqlType.convertStringValueToProvidedType<DateTime>('2024-13-xx'),
+      throwsA(isA<MySQLProtocolException>()),
+    );
+  });
 
   group('tryParseMySqlDateTime', () {
     test('dates, date-times and fractions of 1 to 6 digits', () {
