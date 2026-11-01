@@ -15,13 +15,12 @@ See [example](example/) directory for examples and usage
 Tested in CI:
  * MariaDB 10.11
  * MariaDB 11.8
- * MySQL Community Server 5.6 and 5.7
+ * MySQL Community Server 5.5 (without TLS, see below), 5.6 and 5.7
  * MySQL Community Server 9
  * MySQL Community Server 9.7
  * MySQL Community Server 8.4 and 9.7 on Windows
 
 Also verified outside CI:
- * MySQL Community Server 5.5 (without TLS, see below)
  * MySQL Percona Server 5.7 and 8
  * MariaDB 10.x
  * MariaDB 11.7.2
@@ -223,20 +222,31 @@ lets anyone in the path impersonate the server and read the password. A
 
 #### TLS with old servers: `UNSUPPORTED_PROTOCOL`
 
-Dart's TLS stack (BoringSSL) only negotiates TLS 1.2 and 1.3. MySQL Community
-5.5 and 5.6 before 5.6.46 (built with yaSSL) only speak TLS 1.0 and 1.1, so a
-secure connection to them fails during the handshake with:
+`dart:io` sets TLS 1.2 as the minimum version and has no way to lower it
+(`TlsProtocolVersion` only offers `tls1_2` and `tls1_3`). The official
+Community builds of older MySQL servers stop below that:
+
+| Server | TLS versions |
+|---|---|
+| MySQL 5.5, MySQL 5.6 before 5.6.46 | TLS 1.0 only |
+| MySQL 5.7 before 5.7.28 (yaSSL builds) | TLS 1.0 and 1.1 |
+| MySQL 5.6.46+, 5.7.28+, 8.x, 9.x (OpenSSL) | up to TLS 1.2 or 1.3 |
+
+With no version in common, a secure connection fails during the handshake
+with:
 
 ```
 HandshakeException: Handshake error in client (OS Error:
 	UNSUPPORTED_PROTOCOL(handshake_client.cc:...))
 ```
 
-It is not a certificate problem and no driver option can fix it. Upgrade the
-server (MySQL 5.6.46+, 5.7.28+ and every 8.x/9.x support TLS 1.2:
-`SHOW GLOBAL VARIABLES LIKE 'tls_version'` lists `TLSv1.2`; servers too old
-for it may not have the variable at all), or connect with `secure: false`
-only where the network is trusted (see Network exposure above).
+It is not a certificate problem: `verifyServerCertificate: false` or an
+`onBadCertificate` callback do not change the protocol version, and no driver
+option can. Upgrade the server (`SHOW GLOBAL VARIABLES LIKE 'tls_version'`
+lists `TLSv1.2` when it is supported; servers too old for it may not have the
+variable at all), or connect with `secure: false` only where the network is
+trusted (see Network exposure above). Builds from Linux distributions linked
+against OpenSSL may support TLS 1.2 on older versions too.
 
 `socketTimeout` bounds the TCP connection attempt; `connect(timeoutMs: ...)`
 bounds the greeting, TLS handshake and authentication, and closes the
