@@ -105,7 +105,13 @@ jobs:
       fail-fast: false
       matrix:
         sdk: [3.6.0]
-        mysql-version: ['9', '9.7']
+        mysql-version: ['5.6', '5.7', '9', '9.7']
+        include:
+          # 5.x defaults to latin1 and a 4 MB packet; the suite expects utf8mb4 and 64 MB.
+          - mysql-version: '5.6'
+            server-args: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-allowed-packet=64M
+          - mysql-version: '5.7'
+            server-args: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-allowed-packet=64M
 
     steps:
       - name: Check out repository
@@ -128,7 +134,8 @@ jobs:
             mysql:${{ matrix.mysql-version }} \
             --ssl-ca=/etc/mysql/certs/ca-cert.pem \
             --ssl-cert=/etc/mysql/certs/server-cert.pem \
-            --ssl-key=/etc/mysql/certs/server-key.pem
+            --ssl-key=/etc/mysql/certs/server-key.pem \
+            ${{ matrix.server-args }}
           # The entrypoint's first start skips TCP; this waits for the real one.
           for i in $(seq 1 90); do
             if docker exec mysql mysql -h127.0.0.1 -udart -pdart -e 'SELECT 1' >/dev/null 2>&1; then
@@ -172,3 +179,53 @@ jobs:
           MYSQL_CA_CERT: certs/ca-cert.pem
           MYSQL_RESTART_COMMAND: docker restart mysql
         run: dart run test test/pool_test.dart --plain-name "recupera após reinício real" --chain-stack-traces --platform vm
+
+  windows:
+    name: Windows MySQL ${{ matrix.mysql-version }} (${{ matrix.sdk }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [3.6.0]
+        mysql-version: ['8.4', '9.7']
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # The action enables TLS with its own CA; the server certificate names
+      # localhost and 127.0.0.1, so the tests trust var/ca.pem.
+      - name: Setup MySQL ${{ matrix.mysql-version }}
+        id: setup-mysql
+        uses: shogo82148/actions-setup-mysql@v1
+        with:
+          mysql-version: ${{ matrix.mysql-version }}
+
+      - name: Configure test database and user
+        run: |
+          mysql -uroot -h127.0.0.1 -e "CREATE DATABASE IF NOT EXISTS banco_teste;"
+          mysql -uroot -h127.0.0.1 -e "CREATE USER IF NOT EXISTS 'dart'@'%' IDENTIFIED BY 'dart';"
+          mysql -uroot -h127.0.0.1 -e "GRANT ALL PRIVILEGES ON *.* TO 'dart'@'%' WITH GRANT OPTION;"
+          mysql -uroot -h127.0.0.1 -e "SELECT VERSION(); SHOW STATUS LIKE 'Ssl_cipher';"
+
+      - name: Setup Dart SDK
+        uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Install Dart dependencies
+        run: dart pub get
+
+      - name: Run Dart tests on Windows MySQL ${{ matrix.mysql-version }}
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: dart
+          MYSQL_PASSWORD: dart
+          MYSQL_DATABASE: banco_teste
+          MYSQL_SECURE: "true"
+          MYSQL_CA_CERT: ${{ steps.setup-mysql.outputs.base-dir }}/var/ca.pem
+        run: dart run test --concurrency 1 --chain-stack-traces --platform vm

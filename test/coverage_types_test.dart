@@ -559,6 +559,10 @@ void main() {
     });
 
     test('json', () async {
+      if (!await serverHasJsonType(conn)) {
+        markTestSkipped('the server has no JSON type');
+        return;
+      }
       const doc = '{"a": [1, 2, {"b": "ção 😀"}], "n": null}';
       final reads = await roundTrip('json', literals: [
         "'$doc'"

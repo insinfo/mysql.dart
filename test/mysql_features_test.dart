@@ -282,6 +282,10 @@ void main() {
   });
 
   test('Prepared statements: JSON and binary result decoding', () async {
+    if (!await serverHasJsonType(connection)) {
+      markTestSkipped('the server has no JSON type');
+      return;
+    }
     await connection.execute("DROP TABLE IF EXISTS binary_json_prepared_test");
     await connection.execute('''
       CREATE TABLE binary_json_prepared_test (
@@ -605,7 +609,10 @@ void main() {
   });
 
   test('Coluna JSON', () async {
-    // Certifique-se de que o MySQL >= 5.7 e suporte JSON
+    if (!await serverHasJsonType(connection)) {
+      markTestSkipped('the server has no JSON type');
+      return;
+    }
     await connection.execute("DROP TABLE IF EXISTS json_test");
     await connection.execute('''
     CREATE TABLE json_test (
