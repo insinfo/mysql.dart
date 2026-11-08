@@ -168,6 +168,8 @@ bool _shouldDecodeLengthEncodedColumnAsText(
     case mysqlColumnTypeString:
     case mysqlColumnTypeVarString:
     case mysqlColumnTypeVarChar:
+      // BINARY(n) / VARBINARY(n) use the binary character set and stay bytes.
+      return colDef.charset != mysqlBinaryCollationId;
     case mysqlColumnTypeEnum:
     case mysqlColumnTypeSet:
     case mysqlColumnTypeJson:

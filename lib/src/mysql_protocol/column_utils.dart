@@ -12,6 +12,12 @@ bool _isBlobFamily(MySQLColumnType type) {
       type.intVal == MySQLColumnType.blobType.intVal;
 }
 
+bool _isStringFamily(MySQLColumnType type) {
+  return type.intVal == MySQLColumnType.stringType.intVal ||
+      type.intVal == MySQLColumnType.varStringType.intVal ||
+      type.intVal == MySQLColumnType.varCharType.intVal;
+}
+
 bool _isAlwaysBinary(MySQLColumnType type) {
   return type.intVal == MySQLColumnType.geometryType.intVal ||
       type.intVal == MySQLColumnType.bitType.intVal;
@@ -23,7 +29,9 @@ bool columnShouldBeBinary(MySQLColumnDefinitionPacket colDef) {
     return true;
   }
 
-  if (!_isBlobFamily(colDef.type)) {
+  // BINARY(n) and VARBINARY(n) are sent as STRING / VAR_STRING with the
+  // `binary` character set; decoding them as UTF-8 would corrupt the bytes.
+  if (!_isBlobFamily(colDef.type) && !_isStringFamily(colDef.type)) {
     return false;
   }
 
