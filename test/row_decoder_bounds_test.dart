@@ -803,4 +803,81 @@ void main() {
       );
     });
   });
+
+  group('BINARY / VARBINARY columns (charset 63 on string types)', () {
+    // 16 bytes with several values above 0x7F, which are not valid UTF-8.
+    final uuid = Uint8List.fromList([
+      0xff, 0xfe, 0x80, 0x81, 0xc3, 0x28, 0xa0, 0xa1, //
+      0x00, 0x7f, 0x90, 0xe2, 0x82, 0xac, 0xf0, 0x01,
+    ]);
+    const stringTypes = [
+      mysqlColumnTypeString,
+      mysqlColumnTypeVarString,
+      mysqlColumnTypeVarChar,
+    ];
+
+    test('columnShouldBeBinary is true only for charset 63', () {
+      for (final type in stringTypes) {
+        expect(
+          columnShouldBeBinary(_col(type, charset: mysqlBinaryCollationId)),
+          isTrue,
+        );
+        // CHAR / VARCHAR with a `_bin` collation: BINARY_FLAG set, not charset 63.
+        expect(
+          columnShouldBeBinary(_col(type, charset: 46, flags: 0x80)),
+          isFalse,
+        );
+        expect(columnShouldBeBinary(_col(type, charset: 45)), isFalse);
+      }
+    });
+
+    test('text protocol keeps BINARY / VARBINARY as bytes', () {
+      for (final type in stringTypes) {
+        final buffer = Uint8List.fromList([uuid.length, ...uuid]);
+        final row = MySQLResultSetRowPacket.decode(
+          buffer,
+          [_col(type, charset: mysqlBinaryCollationId, flags: 0x80)],
+        );
+        expect(row.values.single, isA<Uint8List>());
+        expect(row.values.single, orderedEquals(uuid));
+      }
+    });
+
+    test('text protocol still decodes _bin CHAR / VARCHAR as String', () {
+      final text = utf8.encode('abc');
+      final buffer = Uint8List.fromList([text.length, ...text]);
+      for (final type in stringTypes) {
+        final row = MySQLResultSetRowPacket.decode(
+          buffer,
+          [_col(type, charset: 46, flags: 0x80)],
+        );
+        expect(row.values.single, 'abc');
+      }
+    });
+
+    test('binary protocol keeps BINARY / VARBINARY as bytes', () {
+      for (final type in stringTypes) {
+        // header, null bitmap (1 column => 1 byte), length-encoded value
+        final buffer = Uint8List.fromList([0x00, 0x00, uuid.length, ...uuid]);
+        final row = MySQLBinaryResultSetRowPacket.decode(
+          buffer,
+          [_col(type, charset: mysqlBinaryCollationId, flags: 0x80)],
+        );
+        expect(row.values.single, isA<Uint8List>());
+        expect(row.values.single, orderedEquals(uuid));
+      }
+    });
+
+    test('binary protocol still decodes _bin CHAR / VARCHAR as String', () {
+      final text = utf8.encode('h\u00e9llo');
+      final buffer = Uint8List.fromList([0x00, 0x00, text.length, ...text]);
+      for (final type in stringTypes) {
+        final row = MySQLBinaryResultSetRowPacket.decode(
+          buffer,
+          [_col(type, charset: 46, flags: 0x80)],
+        );
+        expect(row.values.single, 'h\u00e9llo');
+      }
+    });
+  });
 }
