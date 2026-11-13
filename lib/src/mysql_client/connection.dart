@@ -2189,10 +2189,17 @@ class MySQLConnection {
     return completer.future;
   }
 
-  /// Parameter values with no native MySQL binary type: maps, lists and sets
-  /// become JSON text (for JSON columns), BigInt its decimal text.
+  static const int _maxMysqlTimeMicroseconds =
+      (838 * 3600 + 59 * 60 + 59) * 1000000 + 999999;
+
+  /// Parameter values with no native MySQL binary type: typed-data views become
+  /// byte slices over their active range, maps, lists and sets become JSON text
+  /// (for JSON columns), BigInt its decimal text.
   static Object? _normalizeParam(Object? value) {
     if (value is Uint8List) return value;
+    if (value is TypedData) {
+      return value.buffer.asUint8List(value.offsetInBytes, value.lengthInBytes);
+    }
     if (value is Map || value is List || value is Set) {
       try {
         return jsonEncode(value is Set ? value.toList() : value);
@@ -2231,6 +2238,16 @@ class MySQLConnection {
       return MySQLColumnType.varStringType;
     } else if (param is DateTime) {
       return MySQLColumnType.dateTimeType;
+    } else if (param is Duration) {
+      final micros = param.inMicroseconds;
+      if (micros < -_maxMysqlTimeMicroseconds ||
+          micros > _maxMysqlTimeMicroseconds) {
+        throw MySQLClientException(
+          'Duration out of MySQL TIME range '
+          '(-838:59:59.999999..838:59:59.999999): $param',
+        );
+      }
+      return MySQLColumnType.timeType;
     } else if (param is bool) {
       // Valores booleanos geralmente são representados como TINYINT(1)
 
