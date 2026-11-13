@@ -111,6 +111,10 @@ class MySQLPacketCommStmtPrepare extends MySQLPacketPayload {
 ///   - Os tipos de cada parâmetro (2 bytes por parâmetro: tipo e flag).
 ///   - Os valores dos parâmetros codificados de forma binária (se não nulos).
 class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
+  /// Maximum magnitude of a MySQL binary `TIME` value (`838:59:59.999999`).
+  static const int _maxMysqlTimeMicroseconds =
+      (838 * 3600 + 59 * 60 + 59) * 1000000 + 999999;
+
   /// ID do statement previamente preparado.
   final int stmtID;
 
@@ -283,8 +287,17 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       case mysqlColumnTypeBit:
       case mysqlColumnTypeDecimal:
       case mysqlColumnTypeNewDecimal:
-        final encoded =
-            param is Uint8List ? param : utf8.encode(param.toString());
+        final List<int> encoded;
+        if (param is Uint8List) {
+          encoded = param;
+        } else if (param is TypedData) {
+          encoded = param.buffer.asUint8List(
+            param.offsetInBytes,
+            param.lengthInBytes,
+          );
+        } else {
+          encoded = utf8.encode(param.toString());
+        }
         encodedValues![paramIndex] = encoded;
         return _lengthEncodedIntSize(encoded.length) + encoded.length;
       default:
@@ -350,7 +363,7 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
       case mysqlColumnTypeTimestamp:
         return _writeDateTimeTo(out, data, offset, param as DateTime);
       case mysqlColumnTypeTime:
-        return _writeTimeTo(out, data, offset, param as DateTime);
+        return _writeTimeTo(out, data, offset, param);
       case mysqlColumnTypeString:
       case mysqlColumnTypeVarString:
       case mysqlColumnTypeVarChar:
@@ -398,15 +411,40 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
     return 5;
   }
 
-  int _encodedTimeLength(DateTime time) {
-    if (time.hour == 0 &&
-        time.minute == 0 &&
-        time.second == 0 &&
-        time.microsecond == 0) {
-      return 1;
+  static int _validatedDurationMicros(Duration duration) {
+    final micros = duration.inMicroseconds;
+    if (micros < -_maxMysqlTimeMicroseconds ||
+        micros > _maxMysqlTimeMicroseconds) {
+      throw MySQLClientException(
+        'Duration out of MySQL TIME range '
+        '(-838:59:59.999999..838:59:59.999999): $duration',
+      );
     }
+    return micros;
+  }
 
-    return time.microsecond > 0 ? 13 : 9;
+  int _encodedTimeLength(Object time) {
+    if (time is Duration) {
+      final micros = _validatedDurationMicros(time);
+      if (micros == 0) {
+        return 1;
+      }
+      final absMicros = micros < 0 ? -micros : micros;
+      return absMicros % Duration.microsecondsPerSecond > 0 ? 13 : 9;
+    }
+    if (time is DateTime) {
+      final totalMicros = time.millisecond * 1000 + time.microsecond;
+      if (time.hour == 0 &&
+          time.minute == 0 &&
+          time.second == 0 &&
+          totalMicros == 0) {
+        return 1;
+      }
+      return totalMicros > 0 ? 13 : 9;
+    }
+    throw MySQLClientException(
+      'Unsupported TIME parameter value: ${time.runtimeType}',
+    );
   }
 
   int _writeDateTimeTo(
@@ -473,37 +511,81 @@ class MySQLPacketCommStmtExecute extends MySQLPacketPayload {
     Uint8List out,
     ByteData data,
     int offset,
+    Object time,
+  ) {
+    if (time is Duration) {
+      return _writeDurationTimeTo(out, data, offset, time);
+    }
+    if (time is DateTime) {
+      return _writeDateTimeAsTimeTo(out, data, offset, time);
+    }
+    throw MySQLClientException(
+      'Unsupported TIME parameter value: ${time.runtimeType}',
+    );
+  }
+
+  int _writeDurationTimeTo(
+    Uint8List out,
+    ByteData data,
+    int offset,
+    Duration duration,
+  ) {
+    final signedMicros = _validatedDurationMicros(duration);
+    if (signedMicros == 0) {
+      out[offset] = 0;
+      return offset + 1;
+    }
+
+    final isNegative = signedMicros < 0;
+    final absMicros = isNegative ? -signedMicros : signedMicros;
+    final totalHours = absMicros ~/ Duration.microsecondsPerHour;
+    final days = totalHours ~/ 24;
+    final hours = totalHours % 24;
+    final minutes = (absMicros ~/ Duration.microsecondsPerMinute) % 60;
+    final seconds = (absMicros ~/ Duration.microsecondsPerSecond) % 60;
+    final microseconds = absMicros % Duration.microsecondsPerSecond;
+
+    out[offset++] = microseconds > 0 ? 12 : 8;
+    out[offset++] = isNegative ? 1 : 0;
+    data.setUint32(offset, days, Endian.little);
+    offset += 4;
+    out[offset++] = hours;
+    out[offset++] = minutes;
+    out[offset++] = seconds;
+    if (microseconds > 0) {
+      data.setUint32(offset, microseconds, Endian.little);
+      offset += 4;
+    }
+    return offset;
+  }
+
+  int _writeDateTimeAsTimeTo(
+    Uint8List out,
+    ByteData data,
+    int offset,
     DateTime time,
   ) {
     final hour = time.hour;
     final minute = time.minute;
     final second = time.second;
-    final microsecond = time.microsecond;
+    final microsecond = time.millisecond * 1000 + time.microsecond;
 
     if (hour == 0 && minute == 0 && second == 0 && microsecond == 0) {
       out[offset] = 0;
       return offset + 1;
     }
 
-    if (microsecond > 0) {
-      out[offset++] = 12;
-      out[offset++] = 0;
-      data.setUint32(offset, 0, Endian.little);
-      offset += 4;
-      out[offset++] = hour;
-      out[offset++] = minute;
-      out[offset++] = second;
-      data.setUint32(offset, microsecond, Endian.little);
-      return offset + 4;
-    }
-
-    out[offset++] = 8;
+    out[offset++] = microsecond > 0 ? 12 : 8;
     out[offset++] = 0;
     data.setUint32(offset, 0, Endian.little);
     offset += 4;
     out[offset++] = hour;
     out[offset++] = minute;
     out[offset++] = second;
+    if (microsecond > 0) {
+      data.setUint32(offset, microsecond, Endian.little);
+      offset += 4;
+    }
     return offset;
   }
 
