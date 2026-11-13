@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 
@@ -347,8 +346,8 @@ void main() {
     );
 
     try {
-      final first = Future.sync(() =>
-          singlePool.withConnection((conn) => conn.execute('SELECT 1')));
+      final first = Future.sync(
+          () => singlePool.withConnection((conn) => conn.execute('SELECT 1')));
       await Future<void>.delayed(const Duration(milliseconds: 50));
       final waiting = Future.sync(() => singlePool.withConnection((conn) async {
             final result = await conn.execute('SELECT 2 AS v');
