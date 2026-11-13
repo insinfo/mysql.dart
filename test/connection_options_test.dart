@@ -1,4 +1,3 @@
-import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 import 'package:test/test.dart';
 

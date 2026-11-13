@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:mysql_dart/exception.dart';
 import 'package:test/test.dart';
 
 import 'test_config.dart';

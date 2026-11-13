@@ -1,5 +1,4 @@
 import 'package:mysql_dart/mysql_dart.dart';
-import 'package:mysql_dart/exception.dart';
 import 'package:test/test.dart';
 
 import 'test_config.dart';
@@ -78,14 +77,14 @@ void main() {
     final tables = await conn.execute(
         "SELECT table_name FROM information_schema.tables "
         "WHERE table_schema = DATABASE() AND table_name IN ('ms_t','ms_u')");
-    expect(tables.rows.map((r) => r.colAt(0)!.toLowerCase()).toList(),
-        ['ms_t']);
+    expect(
+        tables.rows.map((r) => r.colAt(0)!.toLowerCase()).toList(), ['ms_t']);
 
     // syntax error
     await expectLater(
       conn.execute('SELECT 1; SELEC 2; SELECT 3'),
-      throwsA(isA<MySQLServerException>()
-          .having((e) => e.errorCode, 'code', 1064)),
+      throwsA(
+          isA<MySQLServerException>().having((e) => e.errorCode, 'code', 1064)),
     );
 
     final again = await conn.execute('SELECT 42');
@@ -139,8 +138,7 @@ void main() {
         'CREATE PROCEDURE ms_proc() BEGIN SELECT 1 AS a; SELECT 2 AS b; '
         'INSERT INTO ms_t VALUES (7); END');
 
-    final rs = await conn.execute(
-        'SET @y = 5; CALL ms_proc(); SELECT @y AS y');
+    final rs = await conn.execute('SET @y = 5; CALL ms_proc(); SELECT @y AS y');
     final results = rs.toList();
     // SET ok, proc rs 1, proc rs 2, proc final OK, SELECT
     expect(results.length, 5);

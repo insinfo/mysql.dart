@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
-import 'package:mysql_dart/exception.dart';
 import 'package:mysql_dart/mysql_dart.dart';
 
 class MySQLPoolRetryOptions {
