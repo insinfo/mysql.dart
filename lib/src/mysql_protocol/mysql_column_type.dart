@@ -128,6 +128,10 @@ class MySQLColumnType {
       );
     }
 
+    if (_value == mysqlColumnTypeBit && value is Uint8List) {
+      return _convertBitBytesToType<T>(value);
+    }
+
     if (value is! String) {
       throw MySQLProtocolException(
         'Cannot convert MySQL type $_value (${value.runtimeType}) to requested type $T',
@@ -135,6 +139,49 @@ class MySQLColumnType {
     }
 
     return _convertStringToType<T>(value, columnLength);
+  }
+
+  T _convertBitBytesToType<T>(Uint8List bytes) {
+    final isBool = _matchesType<T, bool>();
+    final isIntOrNum = _matchesType<T, int>() || _matchesType<T, num>();
+    final isBigInt = _matchesType<T, BigInt>();
+    if (!isBool && !isIntOrNum && !isBigInt) {
+      throw MySQLProtocolException(
+        'Cannot convert MySQL BIT value to requested type $T',
+      );
+    }
+    if (bytes.length > 8) {
+      throw MySQLProtocolException(
+        'Cannot convert MySQL BIT value of ${bytes.length} bytes (max 8) '
+        'to requested type $T',
+      );
+    }
+    if (isBool) {
+      for (var i = 0; i < bytes.length; i++) {
+        if (bytes[i] != 0) {
+          return true as T;
+        }
+      }
+      return false as T;
+    }
+    if (isIntOrNum) {
+      if (bytes.length == 8 && (bytes[0] & 0x80) != 0) {
+        throw MySQLProtocolException(
+          'Cannot convert unsigned 64-bit MySQL BIT value >= 2^63 to '
+          'requested type $T; read as BigInt instead',
+        );
+      }
+      var result = 0;
+      for (var i = 0; i < bytes.length; i++) {
+        result = (result << 8) | bytes[i];
+      }
+      return result as T;
+    }
+    var result = BigInt.zero;
+    for (var i = 0; i < bytes.length; i++) {
+      result = (result << 8) | BigInt.from(bytes[i]);
+    }
+    return result as T;
   }
 
   T? _convertStringToType<T>(String value, int? columnLength) {
@@ -235,16 +282,16 @@ class MySQLColumnType {
       case mysqlColumnTypeSet:
         return String;
 
-      // Tipos BLOB → Uint8List.
+      // Tipos BLOB e BIT → Uint8List.
       case mysqlColumnTypeLongBlob:
       case mysqlColumnTypeMediumBlob:
       case mysqlColumnTypeBlob:
       case mysqlColumnTypeTinyBlob:
+      case mysqlColumnTypeBit:
         return Uint8List;
 
-      // Outros tipos que preferimos como String (ex.: DECIMAL, BIT, etc.).
+      // Outros tipos que preferimos como String (ex.: DECIMAL, etc.).
       case mysqlColumnTypeGeometry:
-      case mysqlColumnTypeBit:
       case mysqlColumnTypeDecimal:
       case mysqlColumnTypeNewDecimal:
         return String;
