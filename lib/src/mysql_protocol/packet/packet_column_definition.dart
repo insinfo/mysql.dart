@@ -16,6 +16,19 @@ import 'package:mysql_dart/mysql_protocol_extension.dart';
 /// tais como o catálogo, esquema, nome da tabela, nome da coluna, charset,
 /// tamanho da coluna, tipo de dados, flags e número de decimais.
 class MySQLColumnDefinitionPacket extends MySQLPacketPayload {
+  static const int flagNotNull = 0x0001;
+  static const int flagPrimaryKey = 0x0002;
+  static const int flagUniqueKey = 0x0004;
+  static const int flagMultipleKey = 0x0008;
+  static const int flagBlob = 0x0010;
+  static const int flagUnsigned = 0x0020;
+  static const int flagZeroFill = 0x0040;
+  static const int flagBinary = 0x0080;
+  static const int flagEnum = 0x0100;
+  static const int flagAutoIncrement = 0x0200;
+  static const int flagTimestamp = 0x0400;
+  static const int flagSet = 0x0800;
+
   /// Nome do catálogo da coluna.
   final String catalog;
 
@@ -63,6 +76,19 @@ class MySQLColumnDefinitionPacket extends MySQLPacketPayload {
     required this.flags,
     required this.decimals,
   });
+
+  bool get isNotNull => (flags & flagNotNull) != 0;
+  bool get isPrimaryKey => (flags & flagPrimaryKey) != 0;
+  bool get isUniqueKey => (flags & flagUniqueKey) != 0;
+  bool get isMultipleKey => (flags & flagMultipleKey) != 0;
+  bool get isBlob => (flags & flagBlob) != 0;
+  bool get isUnsigned => (flags & flagUnsigned) != 0;
+  bool get isZeroFill => (flags & flagZeroFill) != 0;
+  bool get isBinary => (flags & flagBinary) != 0;
+  bool get isEnum => (flags & flagEnum) != 0;
+  bool get isAutoIncrement => (flags & flagAutoIncrement) != 0;
+  bool get isTimestamp => (flags & flagTimestamp) != 0;
+  bool get isSet => (flags & flagSet) != 0;
 
   /// Decodifica um [Uint8List] recebido do servidor MySQL e constrói
   /// um objeto [MySQLColumnDefinitionPacket].
